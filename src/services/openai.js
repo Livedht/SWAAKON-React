@@ -1,8 +1,9 @@
 import OpenAI from 'openai';
 import { supabase } from './supabase';
 
+const apiKey = process.env.REACT_APP_OPENAI_API_KEY;
 const openai = new OpenAI({
-    apiKey: process.env.REACT_APP_OPENAI_API_KEY,
+    apiKey: apiKey,
     dangerouslyAllowBrowser: true
 });
 
