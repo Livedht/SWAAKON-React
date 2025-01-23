@@ -53,6 +53,7 @@ import { DragDropContext, Droppable, Draggable } from 'react-beautiful-dnd';
 import FilterAltIcon from '@mui/icons-material/FilterAlt';
 import ClearIcon from '@mui/icons-material/Clear';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
+import SWAAKONLogo from '../assets/SWAAKONLogo.png';
 
 const MIN_INPUT_LENGTH = 10;
 const MAX_INPUT_LENGTH = 5000;
@@ -686,7 +687,7 @@ const CourseComparison = () => {
 
     return (
         <Container maxWidth="lg" sx={{ py: 4 }}>
-            {/* Hero Section */}
+            {/* Logo og Hero Section */}
             <Box sx={{
                 textAlign: 'center',
                 mb: 4,
@@ -694,8 +695,21 @@ const CourseComparison = () => {
                     ? 'linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%)'
                     : 'linear-gradient(135deg, #f6f9fe 0%, #f1f4f9 100%)',
                 borderRadius: '24px',
-                p: 3
+                p: 3,
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: 2
             }}>
+                <img 
+                    src={SWAAKONLogo} 
+                    alt="SWAAKON Logo"
+                    style={{ 
+                        height: '40px',
+                        width: 'auto',
+                        marginBottom: '16px'
+                    }} 
+                />
                 <AnimatedButton
                     variant="contained"
                     onClick={toggleForm}
