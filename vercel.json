@@ -1,15 +1,6 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "package.json",
-      "use": "@vercel/static-build",
-      "config": { 
-        "distDir": "build",
-        "buildCommand": "CI=false npm run build"
-      }
-    }
-  ],
+  "framework": "create-react-app",
   "routes": [
     {
       "src": "/static/(.*)",
@@ -32,12 +23,5 @@
     "REACT_APP_OPENAI_API_KEY": "@react_app_openai_api_key",
     "REACT_APP_SUPABASE_URL": "@react_app_supabase_url",
     "REACT_APP_SUPABASE_KEY": "@react_app_supabase_key"
-  },
-  "build": {
-    "env": {
-      "REACT_APP_OPENAI_API_KEY": "@react_app_openai_api_key",
-      "REACT_APP_SUPABASE_URL": "@react_app_supabase_url",
-      "REACT_APP_SUPABASE_KEY": "@react_app_supabase_key"
-    }
   }
 } 
