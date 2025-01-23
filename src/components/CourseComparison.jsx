@@ -30,6 +30,12 @@ import {
     DialogContent,
     DialogActions,
     Switch,
+    FormControl,
+    InputLabel,
+    Select,
+    MenuItem,
+    Slider,
+    Chip,
 } from '@mui/material';
 import styled from '@emotion/styled';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
@@ -42,9 +48,11 @@ import DragIndicatorIcon from '@mui/icons-material/DragIndicator';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
 import { alpha } from '@mui/material/styles';
-import FilterBar from './FilterBar';
 import Papa from 'papaparse';
 import { DragDropContext, Droppable, Draggable } from 'react-beautiful-dnd';
+import FilterAltIcon from '@mui/icons-material/FilterAlt';
+import ClearIcon from '@mui/icons-material/Clear';
+import FileDownloadIcon from '@mui/icons-material/FileDownload';
 
 const MIN_INPUT_LENGTH = 10;
 const MAX_INPUT_LENGTH = 5000;
@@ -242,6 +250,95 @@ const ColumnListItem = styled(Box)(({ theme }) => ({
     }
 }));
 
+const FilterSection = styled(Box)(({ theme }) => ({
+    padding: theme.spacing(2),
+    borderRadius: theme.shape.borderRadius,
+    backgroundColor: theme.palette.background.paper,
+    marginBottom: theme.spacing(2),
+    border: `1px solid ${theme.palette.divider}`,
+}));
+
+const FilterBar = ({ filters, setFilters, availableFilters, availableColumns }) => {
+    const handleClearFilters = () => {
+        setFilters({
+            searchTerm: '',
+            similarityRange: [0, 100],
+            studyLevel: 'all',
+            language: 'all',
+            credits: 'all',
+            semester: 'all',
+            portfolio: 'all',
+            område: 'all',
+            academic_coordinator: 'all',
+            kursnavn: '',
+            institutt: 'all'
+        });
+    };
+
+    const activeFilterCount = Object.values(filters).filter(value => 
+        value !== 'all' && value !== '' && 
+        !(Array.isArray(value) && value[0] === 0 && value[1] === 100)
+    ).length;
+
+    return (
+        <FilterSection>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
+                <Typography variant="subtitle1" sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                    <FilterAltIcon />
+                    Aktive filtre
+                    {activeFilterCount > 0 && (
+                        <Chip label={activeFilterCount} size="small" color="primary" />
+                    )}
+                </Typography>
+                {activeFilterCount > 0 && (
+                    <Button startIcon={<ClearIcon />} onClick={handleClearFilters} size="small">
+                        Nullstill filtre
+                    </Button>
+                )}
+            </Box>
+            
+            <Grid container spacing={2}>
+                {availableColumns
+                    .filter(col => col.enabled)
+                    .map(column => (
+                        <Grid item xs={12} sm={6} md={4} key={column.id}>
+                            {column.id === 'col-similarity' ? (
+                                <Box>
+                                    <Typography gutterBottom>
+                                        Likhet: {filters.similarityRange[0]}% - {filters.similarityRange[1]}%
+                                    </Typography>
+                                    <Slider
+                                        value={filters.similarityRange}
+                                        onChange={(e, newValue) => setFilters({ ...filters, similarityRange: newValue })}
+                                        valueLabelDisplay="auto"
+                                        min={0}
+                                        max={100}
+                                    />
+                                </Box>
+                            ) : (
+                                <FormControl fullWidth size="small">
+                                    <InputLabel>{column.label}</InputLabel>
+                                    <Select
+                                        value={filters[column.field] || 'all'}
+                                        onChange={(e) => setFilters({ ...filters, [column.field]: e.target.value })}
+                                        label={column.label}
+                                    >
+                                        <MenuItem value="all">Alle {column.label.toLowerCase()}</MenuItem>
+                                        {availableFilters[column.field]?.map(option => (
+                                            <MenuItem key={option} value={option}>
+                                                {option}
+                                            </MenuItem>
+                                        ))}
+                                    </Select>
+                                </FormControl>
+                            )}
+                        </Grid>
+                    ))}
+            </Grid>
+        </FilterSection>
+    );
+};
+
 const CourseComparison = () => {
     const [loading, setLoading] = useState(false);
     const [results, setResults] = useState(null);
@@ -263,7 +360,13 @@ const CourseComparison = () => {
         similarityRange: [0, 100],
         studyLevel: 'all',
         language: 'all',
-        credits: 'all'
+        credits: 'all',
+        semester: 'all',
+        portfolio: 'all',
+        område: 'all',
+        academic_coordinator: 'all',
+        kursnavn: '',
+        institutt: 'all'
     });
 
     const [availableFilters, setAvailableFilters] = useState({
@@ -273,21 +376,28 @@ const CourseComparison = () => {
     });
 
     const [showColumnDialog, setShowColumnDialog] = useState(false);
+    const defaultColumns = [
+        { id: 'col-kurskode', label: 'Kurs', enabled: true, required: true, field: 'kurskode' },
+        { id: 'col-semester', label: 'Semester', enabled: true, field: 'semester' },
+        { id: 'col-språk', label: 'Språk (Original)', enabled: false, field: 'språk' },
+        { id: 'col-kursnavn', label: 'Kursnavn', enabled: false, field: 'kursnavn' },
+        { id: 'col-academic-coordinator', label: 'Academic Coordinator', enabled: false, field: 'academic_coordinator' },
+        { id: 'col-credits', label: 'Studiepoeng', enabled: true, field: 'credits' },
+        { id: 'col-portfolio', label: 'Portfolio', enabled: true, field: 'portfolio' },
+        { id: 'col-institutt', label: 'Institutt', enabled: false, field: 'ansvarlig_institutt' },
+        { id: 'col-område', label: 'Forretningsområde', enabled: true, field: 'ansvarlig_område' },
+        { id: 'col-level', label: 'Nivå', enabled: true, field: 'level_of_study' },
+        { id: 'col-pensum', label: 'Pensum', enabled: false, field: 'pensum' },
+        { id: 'col-similarity', label: 'Likhet', enabled: true, required: true, field: 'similarity' },
+        { id: 'col-ai', label: 'AI Analyse', enabled: true, required: true, field: 'ai_analyse' }
+    ];
+
     const [availableColumns, setAvailableColumns] = useState(() => {
         const savedColumns = localStorage.getItem(COLUMN_SETTINGS_KEY);
         if (savedColumns) {
             return JSON.parse(savedColumns);
         }
-        return [
-            { id: 'col-kurskode', label: 'Kurs', enabled: true, required: true, field: 'kurskode' },
-            { id: 'col-coordinator', label: 'Kursansvarlig', enabled: true, field: 'academic_coordinator' },
-            { id: 'col-level', label: 'Nivå', enabled: true, field: 'level_of_study' },
-            { id: 'col-credits', label: 'Studiepoeng', enabled: true, field: 'credits' },
-            { id: 'col-semester', label: 'Semester', enabled: true, field: 'semester' },
-            { id: 'col-area', label: 'Fagområde', enabled: true, field: 'ansvarlig_område' },
-            { id: 'col-similarity', label: 'Likhet', enabled: true, required: true, field: 'similarity' },
-            { id: 'col-ai', label: 'AI Analyse', enabled: true, required: true, field: 'ai_analyse' },
-        ];
+        return defaultColumns;
     });
 
     // Handle page change
@@ -453,7 +563,7 @@ const CourseComparison = () => {
 
             // Språk
             const languageMatch = filters.language === 'all' || 
-                                course.undv_språk === filters.language;
+                                course.språk === filters.language;
 
             // Studiepoeng
             const creditsMatch = filters.credits === 'all' || 
@@ -489,48 +599,65 @@ const CourseComparison = () => {
     // Hent tilgjengelige filtervalg når komponentet lastes
     useEffect(() => {
         const extractFilters = (courses) => {
-            const levels = new Set();
-            const langs = new Set();
-            const credits = new Set();
-
-            courses.forEach(course => {
-                if (course.level_of_study) levels.add(course.level_of_study);
-                if (course.undv_språk) langs.add(course.undv_språk);
-                if (course.credits) credits.add(course.credits);
+            const filterValues = {};
+            
+            // Gå gjennom alle kolonner og samle unike verdier
+            availableColumns.forEach(column => {
+                if (column.field && column.field !== 'similarity') {
+                    const values = new Set();
+                    courses.forEach(course => {
+                        if (course[column.field]) {
+                            values.add(course[column.field]);
+                        }
+                    });
+                    filterValues[column.field] = Array.from(values).sort();
+                }
             });
 
-            setAvailableFilters({
-                studyLevels: Array.from(levels).sort(),
-                languages: Array.from(langs).sort(),
-                creditOptions: Array.from(credits).sort((a, b) => a - b)
-            });
+            setAvailableFilters(filterValues);
         };
 
-        // Kall denne når kursene lastes
         if (results && results.length > 0) {
             extractFilters(results);
         }
-    }, [results]);
+    }, [results, availableColumns]);
 
     const exportResults = () => {
-        const csvContent = results.map(course => ({
-            'Kurs Kode': course.kurskode,
-            'Kurs Navn': course.kursnavn.replace('No', ''),
-            'Kursansvarlig': course.academic_coordinator?.replace('No', ''),
-            'Nivå': course.level_of_study?.replace('No', ''),
-            'Studiepoeng': formatCredits(course.credits),
-            'Semester': course.semester,
-            'Språk': course.undv_språk?.replace('No', ''),
-            'Vurderingsform': course.portfolio_details,
-            'Fagområde': course.ansvarlig_område,
-            'Likhet': `${course.similarity}%`
-        }));
+        if (!results || results.length === 0) return;
+
+        // Få alle aktive kolonner
+        const activeColumns = availableColumns.filter(col => col.enabled);
+        
+        // Lag CSV-innhold basert på aktive kolonner
+        const csvContent = getFilteredResults().map(course => {
+            const row = {};
+            activeColumns.forEach(col => {
+                switch (col.id) {
+                    case 'col-kurskode':
+                        row['Kurs'] = `${course.kurskode} - ${course.kursnavn?.replace('No', '')}`;
+                        break;
+                    case 'col-similarity':
+                        row['Likhet'] = `${course.similarity}%`;
+                        break;
+                    case 'col-credits':
+                        row['Studiepoeng'] = formatCredits(course.credits);
+                        break;
+                    default:
+                        // For alle andre kolonner, bruk feltnavnet fra kolonnedefinisjonen
+                        if (col.field && course[col.field]) {
+                            row[col.label] = course[col.field]?.replace('No', '');
+                        }
+                }
+            });
+            return row;
+        });
 
         const csv = Papa.unparse(csvContent);
-        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
         const link = document.createElement('a');
+        const date = new Date().toISOString().split('T')[0];
         link.href = URL.createObjectURL(blob);
-        link.download = 'kursanalyse_resultater.csv';
+        link.download = `kursanalyse_resultater_${date}.csv`;
         link.click();
     };
 
@@ -549,16 +676,6 @@ const CourseComparison = () => {
     };
 
     const resetColumnSettings = () => {
-        const defaultColumns = [
-            { id: 'col-kurskode', label: 'Kurs', enabled: true, required: true, field: 'kurskode' },
-            { id: 'col-coordinator', label: 'Kursansvarlig', enabled: true, field: 'academic_coordinator' },
-            { id: 'col-level', label: 'Nivå', enabled: true, field: 'level_of_study' },
-            { id: 'col-credits', label: 'Studiepoeng', enabled: true, field: 'credits' },
-            { id: 'col-semester', label: 'Semester', enabled: true, field: 'semester' },
-            { id: 'col-area', label: 'Fagområde', enabled: true, field: 'ansvarlig_område' },
-            { id: 'col-similarity', label: 'Likhet', enabled: true, required: true, field: 'similarity' },
-            { id: 'col-ai', label: 'AI Analyse', enabled: true, required: true, field: 'ai_analyse' },
-        ];
         setAvailableColumns(defaultColumns);
         localStorage.setItem(COLUMN_SETTINGS_KEY, JSON.stringify(defaultColumns));
     };
@@ -706,6 +823,14 @@ const CourseComparison = () => {
                             >
                                 Filters
                             </AnimatedButton>
+                            <AnimatedButton
+                                variant="outlined"
+                                onClick={exportResults}
+                                startIcon={<FileDownloadIcon />}
+                                disabled={!results || results.length === 0}
+                            >
+                                Eksporter til Excel
+                            </AnimatedButton>
                         </Box>
                         <Button
                             startIcon={<SettingsIcon />}
@@ -721,6 +846,7 @@ const CourseComparison = () => {
                             filters={filters}
                             setFilters={setFilters}
                             availableFilters={availableFilters}
+                            availableColumns={availableColumns}
                         />
                     </Collapse>
 
@@ -766,15 +892,20 @@ const CourseComparison = () => {
                                                                         {course.kurskode}
                                                                     </Link>
                                                                     <Typography variant="body2" color="text.secondary">
-                                                                        {course.kursnavn.replace('No', '')}
+                                                                        {course.kursnavn?.replace('No', '')}
                                                                     </Typography>
                                                                 </Box>
                                                             )}
-                                                            {col.id === 'col-coordinator' && course.academic_coordinator?.replace('No', '')}
-                                                            {col.id === 'col-level' && course.level_of_study?.replace('No', '')}
-                                                            {col.id === 'col-credits' && formatCredits(course.credits)}
                                                             {col.id === 'col-semester' && course.semester}
-                                                            {col.id === 'col-area' && course.ansvarlig_område}
+                                                            {col.id === 'col-språk' && course.språk}
+                                                            {col.id === 'col-kursnavn' && course.kursnavn?.replace('No', '')}
+                                                            {col.id === 'col-academic-coordinator' && course.academic_coordinator}
+                                                            {col.id === 'col-portfolio' && course.portfolio}
+                                                            {col.id === 'col-credits' && formatCredits(course.credits)}
+                                                            {col.id === 'col-institutt' && course.ansvarlig_institutt}
+                                                            {col.id === 'col-område' && course.ansvarlig_område}
+                                                            {col.id === 'col-level' && course.level_of_study?.replace('No', '')}
+                                                            {col.id === 'col-pensum' && course.pensum}
                                                             {col.id === 'col-similarity' && (
                                                                 <SimilarityBadge similarity={course.similarity}>
                                                                     {course.similarity}%
