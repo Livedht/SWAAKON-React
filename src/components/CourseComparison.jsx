@@ -24,6 +24,12 @@ import {
     InputAdornment,
     Collapse,
     Grid,
+    Card,
+    Dialog,
+    DialogTitle,
+    DialogContent,
+    DialogActions,
+    Switch,
 } from '@mui/material';
 import styled from '@emotion/styled';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
@@ -31,11 +37,18 @@ import KeyboardArrowUpIcon from '@mui/icons-material/KeyboardArrowUp';
 import InfoIcon from '@mui/icons-material/Info';
 import FilterListIcon from '@mui/icons-material/FilterList';
 import SearchIcon from '@mui/icons-material/Search';
+import SettingsIcon from '@mui/icons-material/Settings';
+import DragIndicatorIcon from '@mui/icons-material/DragIndicator';
+import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
+import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
 import { alpha } from '@mui/material/styles';
 import FilterBar from './FilterBar';
+import Papa from 'papaparse';
+import { DragDropContext, Droppable, Draggable } from 'react-beautiful-dnd';
 
 const MIN_INPUT_LENGTH = 10;
 const MAX_INPUT_LENGTH = 5000;
+const COLUMN_SETTINGS_KEY = 'courseComparisonColumns';
 
 const validateInput = (text) => {
     if (!text || typeof text !== 'string') return false;
@@ -178,6 +191,57 @@ const FilterChip = styled(Box)(({ theme, active }) => ({
     }
 }));
 
+const ErrorDisplay = ({ error, onRetry }) => (
+    <Box sx={{ textAlign: 'center', p: 4 }}>
+        <Typography color="error" gutterBottom>
+            {error}
+        </Typography>
+        <Button onClick={onRetry} variant="contained" sx={{ mt: 2 }}>
+            Prøv igjen
+        </Button>
+    </Box>
+);
+
+const MobileResultCard = ({ course }) => (
+    <Card sx={{ mb: 2, p: 2 }}>
+        <Typography variant="h6">{course.kurskode}</Typography>
+        <Typography variant="body2" color="textSecondary" gutterBottom>
+            {course.kursnavn}
+        </Typography>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 1 }}>
+            <Typography>Likhet: {course.similarity}%</Typography>
+            <Typography>{course.credits} stp</Typography>
+        </Box>
+    </Card>
+);
+
+// Hjelpefunksjon for å formatere studiepoeng
+const formatCredits = (credits) => {
+    if (!credits) return '';
+    // Konverter fra 75 til 7.5 og 25 til 2.5
+    switch (credits) {
+        case 75:
+            return '7.5';
+        case 25:
+            return '2.5';
+        default:
+            return credits.toString();
+    }
+};
+
+const ColumnListItem = styled(Box)(({ theme }) => ({
+    display: 'flex',
+    alignItems: 'center',
+    padding: theme.spacing(1),
+    marginBottom: theme.spacing(1),
+    backgroundColor: theme.palette.background.paper,
+    borderRadius: theme.shape.borderRadius,
+    border: `1px solid ${theme.palette.divider}`,
+    '&:hover': {
+        backgroundColor: theme.palette.action.hover
+    }
+}));
+
 const CourseComparison = () => {
     const [loading, setLoading] = useState(false);
     const [results, setResults] = useState(null);
@@ -206,6 +270,24 @@ const CourseComparison = () => {
         studyLevels: [],
         languages: [],
         creditOptions: []
+    });
+
+    const [showColumnDialog, setShowColumnDialog] = useState(false);
+    const [availableColumns, setAvailableColumns] = useState(() => {
+        const savedColumns = localStorage.getItem(COLUMN_SETTINGS_KEY);
+        if (savedColumns) {
+            return JSON.parse(savedColumns);
+        }
+        return [
+            { id: 'col-kurskode', label: 'Kurs', enabled: true, required: true, field: 'kurskode' },
+            { id: 'col-coordinator', label: 'Kursansvarlig', enabled: true, field: 'academic_coordinator' },
+            { id: 'col-level', label: 'Nivå', enabled: true, field: 'level_of_study' },
+            { id: 'col-credits', label: 'Studiepoeng', enabled: true, field: 'credits' },
+            { id: 'col-semester', label: 'Semester', enabled: true, field: 'semester' },
+            { id: 'col-area', label: 'Fagområde', enabled: true, field: 'ansvarlig_område' },
+            { id: 'col-similarity', label: 'Likhet', enabled: true, required: true, field: 'similarity' },
+            { id: 'col-ai', label: 'AI Analyse', enabled: true, required: true, field: 'ai_analyse' },
+        ];
     });
 
     // Handle page change
@@ -337,10 +419,17 @@ const CourseComparison = () => {
                 ...course,
                 explanation: null
             })));
+            
+            // Skjul analyseformen når resultatene er klare
+            setShowForm(false);
 
         } catch (err) {
             console.error('Error in course analysis:', err);
-            setError('Failed to analyze course overlap: ' + (err.message || 'Unknown error'));
+            setError({
+                message: 'Kunne ikke fullføre analysen',
+                details: err.message,
+                type: err.name
+            });
             setResults(null);
         } finally {
             setLoading(false);
@@ -423,6 +512,61 @@ const CourseComparison = () => {
         }
     }, [results]);
 
+    const exportResults = () => {
+        const csvContent = results.map(course => ({
+            'Kurs Kode': course.kurskode,
+            'Kurs Navn': course.kursnavn.replace('No', ''),
+            'Kursansvarlig': course.academic_coordinator?.replace('No', ''),
+            'Nivå': course.level_of_study?.replace('No', ''),
+            'Studiepoeng': formatCredits(course.credits),
+            'Semester': course.semester,
+            'Språk': course.undv_språk?.replace('No', ''),
+            'Vurderingsform': course.portfolio_details,
+            'Fagområde': course.ansvarlig_område,
+            'Likhet': `${course.similarity}%`
+        }));
+
+        const csv = Papa.unparse(csvContent);
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = 'kursanalyse_resultater.csv';
+        link.click();
+    };
+
+    const moveColumn = (index, direction) => {
+        setAvailableColumns(prevColumns => {
+            const newColumns = [...prevColumns];
+            const newIndex = direction === 'up' ? index - 1 : index + 1;
+            
+            if (newIndex >= 0 && newIndex < newColumns.length) {
+                [newColumns[index], newColumns[newIndex]] = [newColumns[newIndex], newColumns[index]];
+                localStorage.setItem(COLUMN_SETTINGS_KEY, JSON.stringify(newColumns));
+            }
+            
+            return newColumns;
+        });
+    };
+
+    const resetColumnSettings = () => {
+        const defaultColumns = [
+            { id: 'col-kurskode', label: 'Kurs', enabled: true, required: true, field: 'kurskode' },
+            { id: 'col-coordinator', label: 'Kursansvarlig', enabled: true, field: 'academic_coordinator' },
+            { id: 'col-level', label: 'Nivå', enabled: true, field: 'level_of_study' },
+            { id: 'col-credits', label: 'Studiepoeng', enabled: true, field: 'credits' },
+            { id: 'col-semester', label: 'Semester', enabled: true, field: 'semester' },
+            { id: 'col-area', label: 'Fagområde', enabled: true, field: 'ansvarlig_område' },
+            { id: 'col-similarity', label: 'Likhet', enabled: true, required: true, field: 'similarity' },
+            { id: 'col-ai', label: 'AI Analyse', enabled: true, required: true, field: 'ai_analyse' },
+        ];
+        setAvailableColumns(defaultColumns);
+        localStorage.setItem(COLUMN_SETTINGS_KEY, JSON.stringify(defaultColumns));
+    };
+
+    useEffect(() => {
+        localStorage.setItem(COLUMN_SETTINGS_KEY, JSON.stringify(availableColumns));
+    }, [availableColumns]);
+
     return (
         <Container maxWidth="lg" sx={{ py: 4 }}>
             {/* Hero Section */}
@@ -439,8 +583,9 @@ const CourseComparison = () => {
                     variant="contained"
                     onClick={toggleForm}
                     startIcon={showForm ? <KeyboardArrowUpIcon /> : <KeyboardArrowDownIcon />}
+                    disabled={loading}
                 >
-                    {showForm ? 'Hide Analysis Form' : 'Start New Analysis'}
+                    {loading ? 'Analyserer...' : (showForm ? 'Skjul analyseskjema' : 'Start ny analyse')}
                 </AnimatedButton>
             </Box>
 
@@ -525,25 +670,17 @@ const CourseComparison = () => {
             </Collapse>
 
             {error && (
-                <Alert
-                    severity="error"
-                    sx={{
-                        mb: 4,
-                        borderRadius: '12px',
-                        '& .MuiAlert-icon': {
-                            fontSize: '2rem'
-                        }
-                    }}
-                >
-                    {error}
-                </Alert>
+                <ErrorDisplay error={error.message} onRetry={() => {
+                    setError(null);
+                    setResults(null);
+                    setLoading(true);
+                }} />
             )}
 
             {results && (
                 <StyledCard>
-                    {/* Search and Filters */}
-                    <Box sx={{ mb: 3 }}>
-                        <Box sx={{ display: 'flex', gap: 2, mb: 3 }}>
+                    <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 2 }}>
+                        <Box sx={{ display: 'flex', gap: 2 }}>
                             <TextField
                                 fullWidth
                                 size="small"
@@ -570,29 +707,35 @@ const CourseComparison = () => {
                                 Filters
                             </AnimatedButton>
                         </Box>
-
-                        <Collapse in={showFilters}>
-                            <FilterBar 
-                                filters={filters}
-                                setFilters={setFilters}
-                                availableFilters={availableFilters}
-                            />
-                        </Collapse>
+                        <Button
+                            startIcon={<SettingsIcon />}
+                            onClick={() => setShowColumnDialog(true)}
+                        >
+                            Tilpass kolonner
+                        </Button>
                     </Box>
+
+                    {/* Search and Filters */}
+                    <Collapse in={showFilters}>
+                        <FilterBar 
+                            filters={filters}
+                            setFilters={setFilters}
+                            availableFilters={availableFilters}
+                        />
+                    </Collapse>
 
                     {/* Results Table */}
                     <TableContainer>
                         <Table>
                             <TableHead>
                                 <TableRow>
-                                    <StyledTableCell>Course</StyledTableCell>
-                                    <StyledTableCell>Instructor</StyledTableCell>
-                                    <StyledTableCell>Level</StyledTableCell>
-                                    <StyledTableCell>Credits</StyledTableCell>
-                                    <StyledTableCell>Portfolio</StyledTableCell>
-                                    <StyledTableCell align="right">Similarity</StyledTableCell>
-                                    <StyledTableCell>AI Analyse</StyledTableCell>
-                                    <StyledTableCell padding="checkbox" />
+                                    {availableColumns
+                                        .filter(col => col.enabled)
+                                        .map(col => (
+                                            <StyledTableCell key={col.id}>
+                                                {col.label}
+                                            </StyledTableCell>
+                                        ))}
                                 </TableRow>
                             </TableHead>
                             <TableBody>
@@ -601,65 +744,64 @@ const CourseComparison = () => {
                                     .map((course) => (
                                         <React.Fragment key={course.kurskode}>
                                             <StyledTableRow>
-                                                <StyledTableCell>
-                                                    <Box sx={{ display: 'flex', flexDirection: 'column' }}>
-                                                        <Link
-                                                            href={course.link_nb}
-                                                            target="_blank"
-                                                            rel="noopener noreferrer"
-                                                            sx={{
-                                                                color: 'primary.main',
-                                                                textDecoration: 'none',
-                                                                fontWeight: 600,
-                                                                '&:hover': {
-                                                                    textDecoration: 'underline'
-                                                                }
-                                                            }}
-                                                        >
-                                                            {course.kurskode}
-                                                        </Link>
-                                                        <Typography variant="body2" color="text.secondary">
-                                                            {course.kursnavn}
-                                                        </Typography>
-                                                    </Box>
-                                                </StyledTableCell>
-                                                <StyledTableCell>{course.academic_coordinator}</StyledTableCell>
-                                                <StyledTableCell>{course.level_of_study}</StyledTableCell>
-                                                <StyledTableCell>{course.credits}</StyledTableCell>
-                                                <StyledTableCell>
-                                                    {course.portfolio ? 'Yes' : 'No'}
-                                                </StyledTableCell>
-                                                <StyledTableCell align="right">
-                                                    <SimilarityBadge similarity={course.similarity}>
-                                                        {course.similarity}%
-                                                    </SimilarityBadge>
-                                                </StyledTableCell>
-                                                <StyledTableCell padding="normal">
-                                                    <Tooltip title={course.explanation ? (expandedExplanations[course.kurskode] ? 'Skjul analyse' : 'Vis analyse') : 'Generer analyse'}>
-                                                        <ExplanationButton
-                                                            size="small"
-                                                            onClick={() => toggleExplanation(course)}
-                                                            disabled={loadingExplanations[course.kurskode]}
-                                                            variant="contained"
-                                                        >
-                                                            {loadingExplanations[course.kurskode] ? (
-                                                                <CircularProgress size={20} />
-                                                            ) : (
-                                                                <>
-                                                                    {course.explanation ? (
-                                                                        expandedExplanations[course.kurskode] ? 'Skjul detaljer' : 'Se detaljer'
-                                                                    ) : (
-                                                                        'Analyser'
-                                                                    )}
-                                                                </>
+                                                {availableColumns
+                                                    .filter(col => col.enabled)
+                                                    .map(col => (
+                                                        <StyledTableCell key={col.id}>
+                                                            {col.id === 'col-kurskode' && (
+                                                                <Box sx={{ display: 'flex', flexDirection: 'column' }}>
+                                                                    <Link
+                                                                        href={course.link_nb}
+                                                                        target="_blank"
+                                                                        rel="noopener noreferrer"
+                                                                        sx={{
+                                                                            color: 'primary.main',
+                                                                            textDecoration: 'none',
+                                                                            fontWeight: 600,
+                                                                            '&:hover': {
+                                                                                textDecoration: 'underline'
+                                                                            }
+                                                                        }}
+                                                                    >
+                                                                        {course.kurskode}
+                                                                    </Link>
+                                                                    <Typography variant="body2" color="text.secondary">
+                                                                        {course.kursnavn.replace('No', '')}
+                                                                    </Typography>
+                                                                </Box>
                                                             )}
-                                                        </ExplanationButton>
-                                                    </Tooltip>
-                                                </StyledTableCell>
+                                                            {col.id === 'col-coordinator' && course.academic_coordinator?.replace('No', '')}
+                                                            {col.id === 'col-level' && course.level_of_study?.replace('No', '')}
+                                                            {col.id === 'col-credits' && formatCredits(course.credits)}
+                                                            {col.id === 'col-semester' && course.semester}
+                                                            {col.id === 'col-area' && course.ansvarlig_område}
+                                                            {col.id === 'col-similarity' && (
+                                                                <SimilarityBadge similarity={course.similarity}>
+                                                                    {course.similarity}%
+                                                                </SimilarityBadge>
+                                                            )}
+                                                            {col.id === 'col-ai' && (
+                                                                <Button
+                                                                    size="small"
+                                                                    onClick={() => toggleExplanation(course)}
+                                                                    disabled={loadingExplanations[course.kurskode]}
+                                                                    variant="contained"
+                                                                >
+                                                                    {loadingExplanations[course.kurskode] ? (
+                                                                        <CircularProgress size={20} />
+                                                                    ) : (
+                                                                        course.explanation ? 
+                                                                            (expandedExplanations[course.kurskode] ? 'Skjul' : 'Vis') 
+                                                                            : 'Analyser'
+                                                                    )}
+                                                                </Button>
+                                                            )}
+                                                        </StyledTableCell>
+                                                    ))}
                                             </StyledTableRow>
                                             {course.explanation && expandedExplanations[course.kurskode] && (
                                                 <TableRow>
-                                                    <TableCell colSpan={7} sx={{ p: 0 }}>
+                                                    <TableCell colSpan={availableColumns.length} sx={{ p: 0 }}>
                                                         <RowExplanation
                                                             className={`row-explanation ${expandedExplanations[course.kurskode] ? 'visible' : ''}`}
                                                         >
@@ -721,6 +863,89 @@ const CourseComparison = () => {
                     </Box>
                 </StyledCard>
             )}
+
+            {/* Dialog for kolonnetilpasning */}
+            <Dialog
+                open={showColumnDialog}
+                onClose={() => setShowColumnDialog(false)}
+                maxWidth="sm"
+                fullWidth
+            >
+                <DialogTitle>
+                    Tilpass kolonner
+                </DialogTitle>
+                <DialogContent>
+                    <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
+                        Bruk pilene for å endre rekkefølgen. Velg hvilke kolonner som skal vises.
+                    </Typography>
+                    <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                        {availableColumns.map((column, index) => (
+                            <ColumnListItem key={column.id}>
+                                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flex: 1 }}>
+                                    <Switch
+                                        checked={column.enabled}
+                                        onChange={() => {
+                                            if (!column.required) {
+                                                setAvailableColumns(cols =>
+                                                    cols.map(col =>
+                                                        col.id === column.id
+                                                            ? { ...col, enabled: !col.enabled }
+                                                            : col
+                                                    )
+                                                );
+                                            }
+                                        }}
+                                        disabled={column.required}
+                                        inputProps={{
+                                            'aria-label': `Toggle ${column.label}`
+                                        }}
+                                    />
+                                    <Typography flex={1}>
+                                        {column.label}
+                                        {column.required && (
+                                            <Typography
+                                                component="span"
+                                                variant="caption"
+                                                color="text.secondary"
+                                                sx={{ ml: 1 }}
+                                            >
+                                                (Påkrevd)
+                                            </Typography>
+                                        )}
+                                    </Typography>
+                                    <Box sx={{ display: 'flex', gap: 0.5 }}>
+                                        <IconButton 
+                                            size="small"
+                                            onClick={() => moveColumn(index, 'up')}
+                                            disabled={index === 0}
+                                        >
+                                            <ArrowUpwardIcon fontSize="small" />
+                                        </IconButton>
+                                        <IconButton 
+                                            size="small"
+                                            onClick={() => moveColumn(index, 'down')}
+                                            disabled={index === availableColumns.length - 1}
+                                        >
+                                            <ArrowDownwardIcon fontSize="small" />
+                                        </IconButton>
+                                    </Box>
+                                </Box>
+                            </ColumnListItem>
+                        ))}
+                    </Box>
+                </DialogContent>
+                <DialogActions>
+                    <Button 
+                        onClick={resetColumnSettings}
+                        color="secondary"
+                    >
+                        Tilbakestill
+                    </Button>
+                    <Button onClick={() => setShowColumnDialog(false)}>
+                        Lukk
+                    </Button>
+                </DialogActions>
+            </Dialog>
         </Container>
     );
 };

@@ -1,9 +1,69 @@
 import OpenAI from 'openai';
+import { supabase } from './supabase';
 
 const openai = new OpenAI({
     apiKey: process.env.REACT_APP_OPENAI_API_KEY,
     dangerouslyAllowBrowser: true
 });
+
+// Legg til disse konstantene øverst i filen
+const COST_PER_1K_TOKENS = {
+    'gpt-3.5-turbo-0125': {  // Nyeste og billigste versjonen
+        input: 0.0001,   // $0.0001 / 1K tokens
+        output: 0.0002   // $0.0002 / 1K tokens
+    },
+    'text-embedding-3-large': {
+        input: 0.00013,
+        output: 0.00013
+    }
+};
+
+// Cache for translations
+const translationCache = new Map();
+const analysisCache = new Map();
+
+// Funksjon for å logge API-kostnader
+const logApiCost = async (endpoint, model, inputTokens, outputTokens = 0) => {
+    try {
+        const inputCost = (inputTokens / 1000) * COST_PER_1K_TOKENS[model].input;
+        const outputCost = (outputTokens / 1000) * COST_PER_1K_TOKENS[model].output;
+        const totalCost = inputCost + outputCost;
+        
+        // Hent gjeldende bruker
+        const { data: { user } } = await supabase.auth.getUser();
+        
+        console.log('Logging API cost:', {
+            endpoint,
+            model,
+            inputTokens,
+            outputTokens,
+            totalCost,
+            user: user?.email
+        });
+
+        const { data, error } = await supabase
+            .from('api_costs')
+            .insert([{
+                endpoint,
+                model,
+                tokens_used: inputTokens + outputTokens,
+                cost_usd: totalCost,
+                user_id: user?.id,
+                user_email: user?.email
+            }])
+            .select();
+
+        if (error) {
+            console.error('Error inserting API cost:', error);
+            throw error;
+        }
+
+        console.log('Successfully logged API cost:', data);
+        return data;
+    } catch (error) {
+        console.error('Error in logApiCost:', error);
+    }
+};
 
 // Normalize the embedding vector to unit length
 const normalizeVector = (vector) => {
@@ -69,9 +129,6 @@ const isValidInput = (text) => {
     return true;
 };
 
-// Cache for translations
-const translationCache = new Map();
-
 // Simple hash function for text
 const hashText = (text) => {
     let hash = 0;
@@ -104,9 +161,7 @@ const translateText = async (text, targetLanguage) => {
                     role: "system",
                     content: `You are a professional translator specializing in academic and technical content. 
                     Translate the following text to ${targetLanguage === 'en' ? 'English' : 'Norwegian (Bokmål)'}, 
-                    maintaining academic terminology and professional tone. 
-                    Keep the structure and formatting of the original text.
-                    For Norwegian translations, use modern Bokmål.`
+                    maintaining academic terminology and professional tone.`
                 },
                 {
                     role: "user",
@@ -116,6 +171,13 @@ const translateText = async (text, targetLanguage) => {
             temperature: 0.3
         });
 
+        await logApiCost(
+            'translation',
+            'gpt-4-turbo-preview',
+            response.usage.prompt_tokens,
+            response.usage.completion_tokens
+        );
+
         return response.choices[0].message.content;
     } catch (error) {
         console.error('Translation error:', error);
@@ -123,30 +185,19 @@ const translateText = async (text, targetLanguage) => {
     }
 };
 
-// Generate embedding for text
+// Legg til export for generateEmbedding
 export const generateEmbedding = async (text, translateFirst = false) => {
     try {
         let norwegianText = text;
         let englishText = text;
         const isEnglish = isEnglishText(text);
 
-        console.log('Input text language detection:', {
-            isEnglish,
-            textSample: text.slice(0, 100) + '...'
-        });
-
-        // Handle translations if needed
         if (isEnglish) {
-            // If text is English, translate to Norwegian
             norwegianText = await translateText(text, 'nb');
-            console.log('Translated to Norwegian');
         } else if (translateFirst) {
-            // If text is Norwegian and translation is requested, translate to English
             englishText = await translateText(text, 'en');
-            console.log('Translated to English');
         }
 
-        // Add context about the task
         const contextualizeText = (inputText) => `Task: Compare academic course descriptions to find similarities in learning outcomes, content, and themes.
 
 Course Information:
@@ -158,7 +209,6 @@ Consider:
 - Academic level and complexity
 - Teaching methods and approach`;
 
-        // Generate embeddings for both language versions
         const [norwegianEmbedding, englishEmbedding] = await Promise.all([
             openai.embeddings.create({
                 model: "text-embedding-3-large",
@@ -174,12 +224,17 @@ Consider:
             })
         ]);
 
-        console.log('Generated embeddings for both language versions:', {
-            norwegianLength: norwegianEmbedding.data[0].embedding.length,
-            englishLength: englishEmbedding.data[0].embedding.length
-        });
+        await logApiCost(
+            'embeddings',
+            'text-embedding-3-large',
+            norwegianEmbedding.usage.total_tokens
+        );
+        await logApiCost(
+            'embeddings',
+            'text-embedding-3-large',
+            englishEmbedding.usage.total_tokens
+        );
 
-        // Return both embeddings
         return {
             norwegian: norwegianEmbedding.data[0].embedding,
             english: englishEmbedding.data[0].embedding,
@@ -191,7 +246,14 @@ Consider:
     }
 };
 
+// Legg til export for generateOverlapExplanation
 export const generateOverlapExplanation = async (courseA, courseB, similarityScore) => {
+    const cacheKey = `${courseA.name}-${courseB.kurskode}`;
+    
+    if (analysisCache.has(cacheKey)) {
+        return analysisCache.get(cacheKey);
+    }
+    
     const isSameCourse = courseA.name === courseB.kursnavn ||
         (courseA.code && courseA.code === courseB.kurskode);
 
@@ -210,7 +272,7 @@ ${courseB.pensum ? `Pensum: ${courseB.pensum}` : ''}
 
 Similaritet: ${similarityScore}%
 
-Formater svaret slik, og bruk NØYAKTIG denne formateringen:
+Formater svaret slik:
 
 ### KURSSAMMENLIGNING
 ▸ ${isSameCourse ? 'Dette er samme kurs sammenlignet med seg selv' : 'Kort introduksjon av begge kursene'}
@@ -229,34 +291,31 @@ ${!isSameCourse ? `• Unike kompetanser i ${courseA.name}:
 • Unike kompetanser i ${courseB.kursnavn}:
   - [Liste med unike ferdigheter]` : ''}
 
-${courseA.literature || courseB.pensum ? `### PENSUM
-• ${isSameCourse ? 'Kursets pensum og kilder' : 'Overlappende litteratur og kilder'}
-${!isSameCourse ? `• Unike kilder i ${courseA.name}
-• Unike kilder i ${courseB.kursnavn}` : ''}` : ''}
-
 ### ANBEFALING
 ▸ ${isSameCourse ? 'Dette er samme kurs, så det er ikke relevant å ta det flere ganger' : 'Er det hensiktsmessig å ta begge kursene?'}
 ${!isSameCourse ? `▸ Anbefalt rekkefølge (hvis relevant)
-▸ Målgruppe og tilpasning` : ''}
-
-Bruk kun punktlister (• og -) og piler (▸) som vist over.
-Unngå bruk av stjerner (**) eller annen formatering.
-Hold teksten konsis og fokusert på praktisk informasjon.
-${isSameCourse ? 'Siden dette er samme kurs, fokuser på å beskrive kursets innhold og læringsutbytte, ikke på forskjeller.' : ''}`;
+▸ Målgruppe og tilpasning` : ''}`;
 
     try {
         const response = await openai.chat.completions.create({
-            model: "gpt-4-turbo-preview",
+            model: "gpt-3.5-turbo-0125",  // Nyeste og billigste versjonen
             messages: [{ role: "user", content: prompt }],
             temperature: 0.7,
             max_tokens: 1000
         });
 
+        await logApiCost(
+            'explanations',
+            'gpt-3.5-turbo-0125',
+            response.usage.prompt_tokens,
+            response.usage.completion_tokens
+        );
+
         const explanation = response.choices[0].message.content.trim();
-        console.log('Generated explanation:', explanation);
+        analysisCache.set(cacheKey, explanation);
         return explanation;
     } catch (error) {
         console.error('Error generating overlap explanation:', error);
         throw error;
     }
-}; 
+};

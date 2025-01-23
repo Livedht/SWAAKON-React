@@ -11,7 +11,9 @@ console.log('Initializing Supabase client with URL:', supabaseUrl);
 
 export const supabase = createClient(supabaseUrl, supabaseKey, {
     auth: {
-        persistSession: false
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true
     }
 });
 
@@ -260,4 +262,17 @@ export const checkIsAdmin = async () => {
         console.error('Detailed error in checkIsAdmin:', error);
         return false;
     }
+};
+
+export const saveSearchHistory = async (userId, searchData) => {
+    const { error } = await supabase
+        .from('search_history')
+        .insert([{
+            user_id: userId,
+            course_name: searchData.courseName,
+            timestamp: new Date(),
+            results_count: searchData.resultsCount
+        }]);
+    
+    if (error) console.error('Error saving search history:', error);
 }; 

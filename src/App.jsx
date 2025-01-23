@@ -1,27 +1,18 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import CssBaseline from '@mui/material/CssBaseline';
-import { Box, IconButton, Typography, CircularProgress, Button } from '@mui/material';
+import { Box, IconButton, Typography, CircularProgress, Button, Container } from '@mui/material';
 import Brightness4Icon from '@mui/icons-material/Brightness4';
 import Brightness7Icon from '@mui/icons-material/Brightness7';
 import CourseComparison from './components/CourseComparison';
 import Login from './components/Login';
 import { supabase, checkIsAdmin } from './services/supabase';
 import AdminTools from './components/AdminTools';
+import theme from './theme';
+import UserInfo from './components/UserInfo';
 
 const App = () => {
-    // Initialize theme from localStorage or system preference
-    const [mode, setMode] = useState(() => {
-        const savedMode = localStorage.getItem('themeMode');
-        if (savedMode) {
-            return savedMode;
-        }
-        // Check system preference
-        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-            return 'dark';
-        }
-        return 'light';
-    });
+    const [mode, setMode] = useState(localStorage.getItem('theme') || 'light');
 
     // Listen for system theme changes
     useEffect(() => {
@@ -36,57 +27,43 @@ const App = () => {
         return () => mediaQuery.removeEventListener('change', handleChange);
     }, []);
 
-    const theme = useMemo(
-        () =>
-            createTheme({
-                palette: {
-                    mode,
-                    ...(mode === 'dark' ? {
-                        background: {
-                            default: '#121212',
-                            paper: '#1e1e1e',
-                        },
-                        primary: {
-                            main: '#90caf9',
-                        },
-                    } : {
-                        background: {
-                            default: '#f5f5f5',
-                            paper: '#ffffff',
-                        },
-                    }),
-                },
-                components: {
-                    MuiCssBaseline: {
-                        styleOverrides: {
-                            body: {
-                                scrollbarColor: mode === 'dark' ? '#6b6b6b #2b2b2b' : '#959595 #f5f5f5',
-                                '&::-webkit-scrollbar, & *::-webkit-scrollbar': {
-                                    width: '8px',
-                                    height: '8px',
-                                },
-                                '&::-webkit-scrollbar-thumb, & *::-webkit-scrollbar-thumb': {
-                                    borderRadius: 8,
-                                    backgroundColor: mode === 'dark' ? '#6b6b6b' : '#959595',
-                                    border: '2px solid transparent',
-                                },
-                                '&::-webkit-scrollbar-track, & *::-webkit-scrollbar-track': {
-                                    backgroundColor: mode === 'dark' ? '#2b2b2b' : '#f5f5f5',
-                                    borderRadius: 8,
-                                },
-                            },
-                        },
-                    },
-                },
-            }),
-        [mode],
+    const colorMode = useMemo(
+        () => ({
+            toggleColorMode: () => {
+                setMode((prevMode) => {
+                    const newMode = prevMode === 'light' ? 'dark' : 'light';
+                    localStorage.setItem('theme', newMode);
+                    return newMode;
+                });
+            },
+        }),
+        []
     );
 
-    const toggleColorMode = () => {
-        const newMode = mode === 'light' ? 'dark' : 'light';
-        setMode(newMode);
-        localStorage.setItem('themeMode', newMode);
-    };
+    // Kombiner base-temaet med mode
+    const currentTheme = useMemo(
+        () => createTheme({
+            ...theme,
+            palette: {
+                mode,
+                ...(mode === 'dark' ? {
+                    background: {
+                        default: '#121212',
+                        paper: '#1e1e1e',
+                    },
+                    primary: {
+                        main: '#90caf9',
+                    },
+                } : {
+                    background: {
+                        default: '#f5f5f5',
+                        paper: '#ffffff',
+                    },
+                }),
+            },
+        }),
+        [mode]
+    );
 
     const [user, setUser] = useState(null);
     const [loading, setLoading] = useState(true);
@@ -140,7 +117,7 @@ const App = () => {
 
     if (!user) {
         return (
-            <ThemeProvider theme={theme}>
+            <ThemeProvider theme={currentTheme}>
                 <CssBaseline />
                 <Login onLogin={setUser} />
             </ThemeProvider>
@@ -150,13 +127,11 @@ const App = () => {
     console.log('Render state:', { isAdmin, showAdmin, userEmail: user?.email });
 
     return (
-        <ThemeProvider theme={theme}>
+        <ThemeProvider theme={currentTheme}>
             <CssBaseline />
             <Box sx={{
                 minHeight: '100vh',
-                bgcolor: 'background.default',
-                position: 'relative',
-                pb: 4
+                bgcolor: 'background.default'
             }}>
                 <Box sx={{
                     position: 'sticky',
@@ -165,30 +140,46 @@ const App = () => {
                     bgcolor: 'background.paper',
                     borderBottom: 1,
                     borderColor: 'divider',
-                    px: 2,
+                    px: 3,
                     py: 1,
                     display: 'flex',
                     justifyContent: 'space-between',
-                    alignItems: 'center',
-                    mb: 2
+                    alignItems: 'center'
                 }}>
-                    <Typography
-                        variant="h6"
-                        sx={{
-                            fontWeight: 700,
-                            background: theme => theme.palette.mode === 'dark'
-                                ? 'linear-gradient(45deg, #90caf9, #42a5f5)'
-                                : 'linear-gradient(45deg, #1976d2, #42a5f5)',
-                            backgroundClip: 'text',
-                            WebkitBackgroundClip: 'text',
-                            WebkitTextFillColor: 'transparent',
-                        }}
-                        onClick={() => setCurrentView('main')}
-                        style={{ cursor: 'pointer' }}
-                    >
-                        SWAAKON
-                    </Typography>
-                    <Box sx={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+                        <Box 
+                            sx={{ 
+                                display: 'flex', 
+                                alignItems: 'center', 
+                                gap: 1,
+                                cursor: 'pointer'
+                            }}
+                            onClick={() => setCurrentView('main')}
+                        >
+                            <img 
+                                src="/Logo.png" 
+                                alt="SWAAKON Logo" 
+                                style={{ 
+                                    height: '32px',
+                                    width: 'auto',
+                                    marginRight: '8px'
+                                }} 
+                            />
+                            <Typography
+                                variant="h6"
+                                sx={{
+                                    fontWeight: 700,
+                                    background: theme => theme.palette.mode === 'dark'
+                                        ? 'linear-gradient(45deg, #90caf9, #42a5f5)'
+                                        : 'linear-gradient(45deg, #1976d2, #42a5f5)',
+                                    backgroundClip: 'text',
+                                    WebkitBackgroundClip: 'text',
+                                    WebkitTextFillColor: 'transparent',
+                                }}
+                            >
+                                SWAAKON
+                            </Typography>
+                        </Box>
                         {isAdmin && (
                             <Button 
                                 onClick={() => setCurrentView(currentView === 'admin' ? 'main' : 'admin')}
@@ -199,29 +190,15 @@ const App = () => {
                                 {currentView === 'admin' ? 'Tilbake til app' : 'Admin Panel'}
                             </Button>
                         )}
-                        <Button 
-                            onClick={() => supabase.auth.signOut()} 
-                            variant="outlined"
-                            size="small"
-                        >
-                            Logg ut
-                        </Button>
-                        <IconButton
-                            onClick={toggleColorMode}
-                            size="large"
-                            sx={{
-                                bgcolor: mode === 'dark' ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.05)',
-                                '&:hover': {
-                                    bgcolor: mode === 'dark' ? 'rgba(255, 255, 255, 0.2)' : 'rgba(0, 0, 0, 0.1)',
-                                },
-                                borderRadius: 2,
-                                p: 1,
-                            }}
-                            aria-label={mode === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+                        <IconButton 
+                            onClick={colorMode.toggleColorMode} 
+                            color="inherit"
                         >
                             {mode === 'dark' ? <Brightness7Icon /> : <Brightness4Icon />}
                         </IconButton>
                     </Box>
+                    
+                    {user && <UserInfo user={user} />}
                 </Box>
                 <Box sx={{ p: 2 }}>
                     {currentView === 'main' ? (

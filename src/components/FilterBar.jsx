@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import {
     Box,
     TextField,
@@ -21,6 +21,9 @@ const FilterBar = ({ filters, setFilters, availableFilters }) => {
         language,
         credits
     } = filters;
+
+    const [sortBy, setSortBy] = useState('similarity');
+    const [sortOrder, setSortOrder] = useState('desc');
 
     const handleClearFilters = () => {
         setFilters({
@@ -104,6 +107,18 @@ const FilterBar = ({ filters, setFilters, availableFilters }) => {
                         max={100}
                     />
                 </Box>
+
+                <FormControl sx={{ minWidth: 120, ml: 2 }}>
+                    <InputLabel>Sorter etter</InputLabel>
+                    <Select
+                        value={sortBy}
+                        onChange={(e) => setSortBy(e.target.value)}
+                    >
+                        <MenuItem value="similarity">Likhet</MenuItem>
+                        <MenuItem value="credits">Studiepoeng</MenuItem>
+                        <MenuItem value="name">Navn</MenuItem>
+                    </Select>
+                </FormControl>
             </Box>
 
             <Box sx={{ mt: 2, display: 'flex', gap: 1, flexWrap: 'wrap' }}>
