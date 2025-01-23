@@ -20,8 +20,8 @@
     }
   ],
   "env": {
-    "REACT_APP_OPENAI_API_KEY": "@react_app_openai_api_key",
-    "REACT_APP_SUPABASE_URL": "@react_app_supabase_url",
-    "REACT_APP_SUPABASE_KEY": "@react_app_supabase_key"
+    "REACT_APP_OPENAI_API_KEY": "${REACT_APP_OPENAI_API_KEY}",
+    "REACT_APP_SUPABASE_URL": "${REACT_APP_SUPABASE_URL}",
+    "REACT_APP_SUPABASE_KEY": "${REACT_APP_SUPABASE_KEY}"
   }
 } 
