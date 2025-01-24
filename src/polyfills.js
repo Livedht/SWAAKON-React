@@ -13,6 +13,15 @@ import 'browserify-zlib';
 import 'querystring-es3';
 import 'vm-browserify';
 
+// Browser polyfills
+import 'url-polyfill';
+
+// Additional Node.js polyfills
+import 'util/';
+import 'path-browserify';
+import 'os-browserify/browser';
+import 'crypto-browserify';
+
 // Configure global polyfills
 if (typeof window !== 'undefined') {
     window.Buffer = window.Buffer || Buffer;
@@ -22,13 +31,4 @@ if (typeof window !== 'undefined') {
     window.global = window;
     window.global.Buffer = window.Buffer;
     window.global.process = window.process;
-}
-
-// Browser polyfills
-import 'url-polyfill';
-
-// Additional Node.js polyfills
-import 'util/';
-import 'path-browserify';
-import 'os-browserify/browser';
-import 'crypto-browserify'; 
+} 
