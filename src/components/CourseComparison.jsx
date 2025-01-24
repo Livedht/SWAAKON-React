@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { fetchStoredEmbeddings } from '../services/supabase';
-import { generateEmbedding, generateOverlapExplanation } from '../services/openai';
-import { findSimilarCourses } from '../services/similarity';
+import { generateHFEmbedding, findSimilarCourses } from '../services/similarity';
+import { alpha } from '@mui/material/styles';
 import {
     Box,
     Button,
@@ -17,14 +17,11 @@ import {
     TableRow,
     Paper,
     Link,
-    Tooltip,
     IconButton,
     TablePagination,
-    Alert,
     InputAdornment,
     Collapse,
     Grid,
-    Card,
     Dialog,
     DialogTitle,
     DialogContent,
@@ -40,24 +37,65 @@ import {
 import styled from '@emotion/styled';
 import KeyboardArrowDownIcon from '@mui/icons-material/KeyboardArrowDown';
 import KeyboardArrowUpIcon from '@mui/icons-material/KeyboardArrowUp';
-import InfoIcon from '@mui/icons-material/Info';
-import FilterListIcon from '@mui/icons-material/FilterList';
 import SearchIcon from '@mui/icons-material/Search';
 import SettingsIcon from '@mui/icons-material/Settings';
-import DragIndicatorIcon from '@mui/icons-material/DragIndicator';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
-import { alpha } from '@mui/material/styles';
 import Papa from 'papaparse';
-import { DragDropContext, Droppable, Draggable } from 'react-beautiful-dnd';
 import FilterAltIcon from '@mui/icons-material/FilterAlt';
+import FilterListIcon from '@mui/icons-material/FilterList';
 import ClearIcon from '@mui/icons-material/Clear';
 import FileDownloadIcon from '@mui/icons-material/FileDownload';
 import SWAAKONLogo from '../assets/SWAAKONLogo.png';
+import { supabase, checkRateLimit, trackApiCost, saveSearch } from '../services/supabase';
+import { useSearch } from '../context/SearchContext';
 
 const MIN_INPUT_LENGTH = 10;
 const MAX_INPUT_LENGTH = 5000;
 const COLUMN_SETTINGS_KEY = 'courseComparisonColumns';
+
+const defaultColumns = [
+    { id: 'col-kurskode', label: 'Kurs', enabled: true, required: true },
+    { id: 'col-similarity', label: 'Likhet', enabled: true, required: true },
+    { id: 'col-credits', label: 'Studiepoeng', enabled: true },
+    { id: 'col-level', label: 'Studienivå', enabled: true },
+    { id: 'col-språk', label: 'Språk', enabled: true },
+    { id: 'col-semester', label: 'Semester', enabled: true },
+    { id: 'col-portfolio', label: 'Portfolio', enabled: false },
+    { id: 'col-område', label: 'Område', enabled: false },
+    { id: 'col-academic-coordinator', label: 'Koordinator', enabled: false },
+    { id: 'col-institutt', label: 'Institutt', enabled: false },
+    { id: 'col-ai', label: 'AI Analyse', enabled: true }
+];
+
+const availableFilters = {
+    studyLevel: ['Bachelor', 'Master', 'PhD'],
+    language: ['Norsk', 'Engelsk'],
+    credits: ['5', '7.5', '10', '15', '20', '30'],
+    semester: ['Høst', 'Vår', 'Høst og vår'],
+    portfolio: ['Obligatorisk', 'Valgfri'],
+    område: ['Informatikk', 'Matematikk', 'Fysikk', 'Kjemi'],
+    academic_coordinator: [],
+    institutt: []
+};
+
+// Helper function to format credits
+const formatCredits = (credits) => {
+    if (!credits) return '';
+
+    // Convert to string first to handle both string and number inputs
+    const creditStr = credits.toString();
+
+    // Handle special cases where we need to add a decimal point
+    if (creditStr === '75') return '7.5 SP';
+    if (creditStr === '25') return '2.5 SP';
+
+    // For other cases, parse and format normally
+    const numCredits = parseFloat(creditStr);
+    if (isNaN(numCredits)) return creditStr;
+
+    return `${numCredits} SP`;
+};
 
 const validateInput = (text) => {
     if (!text || typeof text !== 'string') return false;
@@ -119,21 +157,6 @@ const StyledTableRow = styled(TableRow)(({ theme }) => ({
     }
 }));
 
-const ExplanationButton = styled(Button)(({ theme }) => ({
-    minWidth: 'auto',
-    padding: '6px 12px',
-    transition: 'all 0.2s ease',
-    backgroundColor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.2 : 0.1),
-    color: theme.palette.primary.main,
-    '&:hover': {
-        backgroundColor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.3 : 0.2),
-        transform: 'scale(1.02)'
-    },
-    '&.Mui-disabled': {
-        backgroundColor: alpha(theme.palette.action.disabled, theme.palette.mode === 'dark' ? 0.2 : 0.1)
-    }
-}));
-
 const RowExplanation = styled(Box)(({ theme }) => ({
     opacity: 0,
     height: 0,
@@ -178,28 +201,6 @@ const SimilarityBadge = styled(Box)(({ theme, similarity }) => ({
                 : theme.palette.error.dark
 }));
 
-const FilterChip = styled(Box)(({ theme, active }) => ({
-    display: 'inline-flex',
-    alignItems: 'center',
-    padding: '6px 16px',
-    borderRadius: '20px',
-    fontSize: '0.9rem',
-    cursor: 'pointer',
-    backgroundColor: active
-        ? theme.palette.primary.main
-        : theme.palette.mode === 'dark' ? alpha(theme.palette.primary.main, 0.1) : 'transparent',
-    color: active
-        ? theme.palette.mode === 'dark' ? theme.palette.common.black : theme.palette.common.white
-        : theme.palette.text.primary,
-    border: `1px solid ${active ? theme.palette.primary.main : theme.palette.divider}`,
-    transition: 'all 0.2s ease',
-    '&:hover': {
-        backgroundColor: active
-            ? theme.palette.primary.dark
-            : alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.2 : 0.05)
-    }
-}));
-
 const ErrorDisplay = ({ error, onRetry }) => (
     <Box sx={{ textAlign: 'center', p: 4 }}>
         <Typography color="error" gutterBottom>
@@ -210,33 +211,6 @@ const ErrorDisplay = ({ error, onRetry }) => (
         </Button>
     </Box>
 );
-
-const MobileResultCard = ({ course }) => (
-    <Card sx={{ mb: 2, p: 2 }}>
-        <Typography variant="h6">{course.kurskode}</Typography>
-        <Typography variant="body2" color="textSecondary" gutterBottom>
-            {course.kursnavn}
-        </Typography>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 1 }}>
-            <Typography>Likhet: {course.similarity}%</Typography>
-            <Typography>{course.credits} stp</Typography>
-        </Box>
-    </Card>
-);
-
-// Hjelpefunksjon for å formatere studiepoeng
-const formatCredits = (credits) => {
-    if (!credits) return '';
-    // Konverter fra 75 til 7.5 og 25 til 2.5
-    switch (credits) {
-        case 75:
-            return '7.5';
-        case 25:
-            return '2.5';
-        default:
-            return credits.toString();
-    }
-};
 
 const ColumnListItem = styled(Box)(({ theme }) => ({
     display: 'flex',
@@ -276,8 +250,8 @@ const FilterBar = ({ filters, setFilters, availableFilters, availableColumns }) 
         });
     };
 
-    const activeFilterCount = Object.values(filters).filter(value => 
-        value !== 'all' && value !== '' && 
+    const activeFilterCount = Object.values(filters).filter(value =>
+        value !== 'all' && value !== '' &&
         !(Array.isArray(value) && value[0] === 0 && value[1] === 100)
     ).length;
 
@@ -297,7 +271,7 @@ const FilterBar = ({ filters, setFilters, availableFilters, availableColumns }) 
                     </Button>
                 )}
             </Box>
-            
+
             <Grid container spacing={2}>
                 {availableColumns
                     .filter(col => col.enabled)
@@ -340,147 +314,72 @@ const FilterBar = ({ filters, setFilters, availableFilters, availableColumns }) 
     );
 };
 
-const CourseComparison = () => {
+const CourseComparison = ({ restoredSearch, onSearchComplete }) => {
+    const { searchState, updateSearchState } = useSearch();
     const [loading, setLoading] = useState(false);
-    const [results, setResults] = useState(null);
     const [error, setError] = useState(null);
     const [loadingExplanations, setLoadingExplanations] = useState({});
     const [page, setPage] = useState(0);
     const [rowsPerPage, setRowsPerPage] = useState(10);
-    const [showForm, setShowForm] = useState(true);
-    const [formData, setFormData] = useState({
-        courseName: '',
-        courseDescription: '',
-        courseLiterature: ''
-    });
-    const [searchTerm, setSearchTerm] = useState('');
     const [showFilters, setShowFilters] = useState(false);
     const [expandedExplanations, setExpandedExplanations] = useState({});
-    const [filters, setFilters] = useState({
-        searchTerm: '',
-        similarityRange: [0, 100],
-        studyLevel: 'all',
-        language: 'all',
-        credits: 'all',
-        semester: 'all',
-        portfolio: 'all',
-        område: 'all',
-        academic_coordinator: 'all',
-        kursnavn: '',
-        institutt: 'all'
-    });
-
-    const [availableFilters, setAvailableFilters] = useState({
-        studyLevels: [],
-        languages: [],
-        creditOptions: []
-    });
-
     const [showColumnDialog, setShowColumnDialog] = useState(false);
-    const defaultColumns = [
-        { id: 'col-kurskode', label: 'Kurs', enabled: true, required: true, field: 'kurskode' },
-        { id: 'col-semester', label: 'Semester', enabled: true, field: 'semester' },
-        { id: 'col-språk', label: 'Språk (Original)', enabled: false, field: 'språk' },
-        { id: 'col-kursnavn', label: 'Kursnavn', enabled: false, field: 'kursnavn' },
-        { id: 'col-academic-coordinator', label: 'Academic Coordinator', enabled: false, field: 'academic_coordinator' },
-        { id: 'col-credits', label: 'Studiepoeng', enabled: true, field: 'credits' },
-        { id: 'col-portfolio', label: 'Portfolio', enabled: true, field: 'portfolio' },
-        { id: 'col-institutt', label: 'Institutt', enabled: false, field: 'ansvarlig_institutt' },
-        { id: 'col-område', label: 'Forretningsområde', enabled: true, field: 'ansvarlig_område' },
-        { id: 'col-level', label: 'Nivå', enabled: true, field: 'level_of_study' },
-        { id: 'col-pensum', label: 'Pensum', enabled: false, field: 'pensum' },
-        { id: 'col-similarity', label: 'Likhet', enabled: true, required: true, field: 'similarity' },
-        { id: 'col-ai', label: 'AI Analyse', enabled: true, required: true, field: 'ai_analyse' }
-    ];
+    const [searchTerm, setSearchTerm] = useState('');
 
-    const [availableColumns, setAvailableColumns] = useState(() => {
-        const savedColumns = localStorage.getItem(COLUMN_SETTINGS_KEY);
-        if (savedColumns) {
-            return JSON.parse(savedColumns);
-        }
-        return defaultColumns;
-    });
+    // Use values from context
+    const { formData, results, showForm, filters, availableColumns, availableFilters } = searchState;
 
-    // Handle page change
-    const handleChangePage = (event, newPage) => {
-        setPage(newPage);
-    };
-
-    // Handle rows per page change
-    const handleChangeRowsPerPage = (event) => {
-        setRowsPerPage(parseInt(event.target.value, 10));
-        setPage(0);
-    };
-
+    // Update context when form data changes
     const handleInputChange = (e) => {
         const { name, value } = e.target;
-        setFormData(prev => ({
-            ...prev,
-            [name]: value
-        }));
-    };
-
-    const handleGenerateExplanation = async (course, courseText) => {
-        console.log('Starting explanation generation for:', {
-            courseCode: course.kurskode,
-            inputData: {
-                name: formData.courseName,
-                content: courseText,
-            },
-            similarity: course.similarity
-        });
-
-        setLoadingExplanations(prev => ({ ...prev, [course.kurskode]: true }));
-
-        try {
-            console.log('Calling generateOverlapExplanation with:', {
-                inputCourse: {
-                    name: formData.courseName,
-                    content: courseText,
-                },
-                storedCourse: course,
-                similarity: course.similarity
-            });
-
-            const explanation = await generateOverlapExplanation(
-                {
-                    name: formData.courseName,
-                    content: courseText,
-                },
-                course,
-                course.similarity
-            );
-
-            console.log('Received explanation:', explanation);
-
-            if (!explanation) {
-                throw new Error('No explanation was generated');
+        updateSearchState({
+            formData: {
+                ...formData,
+                [name]: value
             }
-
-            setResults(prevResults =>
-                prevResults.map(r =>
-                    r.kurskode === course.kurskode
-                        ? { ...r, explanation }
-                        : r
-                )
-            );
-        } catch (err) {
-            console.error('Error generating explanation:', err);
-            setError(`Failed to generate explanation for ${course.kurskode}: ${err.message}`);
-        } finally {
-            // Always clear loading state, whether successful or not
-            setLoadingExplanations(prev => ({ ...prev, [course.kurskode]: false }));
-        }
+        });
     };
 
-    const handleSubmit = async (e) => {
-        e.preventDefault();
+    // Update context when filters change
+    const handleFilterChange = (newFilters) => {
+        updateSearchState({ filters: newFilters });
+    };
+
+    // Update context when columns change
+    const handleColumnsChange = (newColumns) => {
+        updateSearchState({ availableColumns: newColumns });
+    };
+
+    // Effect for handling restored search
+    useEffect(() => {
+        if (restoredSearch) {
+            updateSearchState({
+                formData: restoredSearch.search_input,
+                results: restoredSearch.results,
+                showForm: false,
+                filters: restoredSearch.table_settings?.filters || filters,
+                availableColumns: restoredSearch.table_settings?.activeColumns ?
+                    availableColumns.map(col => ({
+                        ...col,
+                        enabled: restoredSearch.table_settings.activeColumns.includes(col.id)
+                    })) :
+                    availableColumns
+            });
+            onSearchComplete();
+        }
+    }, [restoredSearch, onSearchComplete]);
+
+    const handleCompare = useCallback(async () => {
         setLoading(true);
         setError(null);
-        setResults(null);
-        setLoadingExplanations({});
 
         try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) throw new Error('User not authenticated');
+
+            // Check rate limit before making the request
+            await checkRateLimit(user.id);
+
             // Validate inputs
             if (!validateInput(formData.courseName)) {
                 throw new Error('Course name must be between 10 and 5000 characters');
@@ -493,91 +392,108 @@ const CourseComparison = () => {
             }
 
             // Combine course information for embedding
-            const courseText = `
-                Course Name: ${formData.courseName.trim()}
-                Course Description: ${formData.courseDescription.trim()}
-                ${formData.courseLiterature ? `Course Literature: ${formData.courseLiterature.trim()}` : ''}
-            `.trim();
+            const courseText = {
+                name: formData.courseName.trim(),
+                content: formData.courseDescription.trim(),
+                literature: formData.courseLiterature?.trim() || ''
+            };
 
-            console.log('Starting course analysis with text length:', courseText.length);
-
-            // Generate embeddings for both Norwegian and English versions
-            const embeddings = await generateEmbedding(courseText);
-            console.log('Generated embeddings:', {
-                norwegianLength: embeddings.norwegian.length,
-                englishLength: embeddings.english.length
-            });
-
-            // Fetch stored courses
-            const storedCourses = await fetchStoredEmbeddings();
-            if (!storedCourses || storedCourses.length === 0) {
-                throw new Error('No stored courses found to compare against');
-            }
-            console.log(`Fetched ${storedCourses.length} stored courses`);
-
-            // Find similar courses using the Norwegian embedding since our stored courses are in Norwegian
-            const similarCourses = await findSimilarCourses(embeddings.norwegian, storedCourses);
-            console.log(`Found ${similarCourses.length} similar courses`);
-
-            if (similarCourses.length === 0) {
-                setResults([]);
-                setError('No similar courses found. Try providing more detailed course information.');
+            console.log('Generating embeddings...');
+            let embedding;
+            try {
+                // Try with local inference first
+                embedding = await generateHFEmbedding(courseText, true);
+                console.log('Generated embedding:', { length: embedding.length, sample: embedding.slice(0, 5) });
+            } catch (localError) {
+                console.error('Local inference failed:', localError);
+                setError('Failed to generate embeddings. Please try again or contact support if the issue persists.');
                 return;
             }
 
-            // Set results without explanations
-            setResults(similarCourses.map(course => ({
-                ...course,
-                explanation: null
-            })));
-            
-            // Skjul analyseformen når resultatene er klare
-            setShowForm(false);
+            console.log('Fetching stored courses...');
+            const storedCourses = await fetchStoredEmbeddings();
 
-        } catch (err) {
-            console.error('Error in course analysis:', err);
-            setError({
-                message: 'Kunne ikke fullføre analysen',
-                details: err.message,
-                type: err.name
+            if (!storedCourses || storedCourses.length === 0) {
+                throw new Error('No stored courses found to compare against');
+            }
+
+            console.log('Finding similar courses...');
+            const similarCourses = await findSimilarCourses({ embedding }, storedCourses);
+
+            if (similarCourses.length === 0) {
+                updateSearchState({ results: [] });
+                throw new Error('No similar courses found. Try providing more detailed course information.');
+            }
+
+            // Update both context and local state
+            updateSearchState({
+                results: similarCourses,
+                showForm: false
             });
-            setResults(null);
+
+            // Save search to history
+            await saveSearch({
+                search_input: formData,
+                table_settings: {
+                    activeColumns: availableColumns.filter(col => col.enabled).map(col => col.id),
+                    filters: filters,
+                    sortOrder: null
+                },
+                results: similarCourses
+            });
+
+            // Track API usage
+            const estimatedCost = 0.001;
+            await trackApiCost(user.id, estimatedCost, 'course_comparison');
+
+        } catch (error) {
+            setError(error.message);
+            console.error('Comparison error:', error);
         } finally {
             setLoading(false);
         }
+    }, [formData, filters, availableColumns, updateSearchState]);
+
+    // Toggle form visibility
+    const toggleForm = () => {
+        updateSearchState({ showForm: !showForm });
     };
 
     const getFilteredResults = () => {
         return results.filter(course => {
             // Søketekst
-            const searchMatch = !filters.searchTerm || 
+            const searchMatch = !filters.searchTerm ||
                 course.kurskode.toLowerCase().includes(filters.searchTerm.toLowerCase()) ||
                 course.kursnavn.toLowerCase().includes(filters.searchTerm.toLowerCase());
 
             // Similarity score range
-            const similarityMatch = course.similarity >= filters.similarityRange[0] && 
-                                  course.similarity <= filters.similarityRange[1];
+            const similarityMatch = course.similarity >= filters.similarityRange[0] &&
+                course.similarity <= filters.similarityRange[1];
 
             // Studienivå
-            const levelMatch = filters.studyLevel === 'all' || 
-                             course.level_of_study === filters.studyLevel;
+            const levelMatch = filters.studyLevel === 'all' ||
+                course.level_of_study === filters.studyLevel;
 
             // Språk
-            const languageMatch = filters.language === 'all' || 
-                                course.språk === filters.language;
+            const languageMatch = filters.language === 'all' ||
+                course.språk === filters.language;
 
             // Studiepoeng
-            const creditsMatch = filters.credits === 'all' || 
-                               course.credits === filters.credits;
+            const creditsMatch = filters.credits === 'all' ||
+                course.credits === filters.credits;
 
-            return searchMatch && similarityMatch && levelMatch && 
-                   languageMatch && creditsMatch;
+            return searchMatch && similarityMatch && levelMatch &&
+                languageMatch && creditsMatch;
         });
     };
 
-    // Add toggle function
-    const toggleForm = () => {
-        setShowForm(!showForm);
+    const handleChangePage = (event, newPage) => {
+        setPage(newPage);
+    };
+
+    const handleChangeRowsPerPage = (event) => {
+        setRowsPerPage(parseInt(event.target.value, 10));
+        setPage(0);
     };
 
     const toggleExplanation = (course) => {
@@ -597,38 +513,49 @@ const CourseComparison = () => {
         }
     };
 
-    // Hent tilgjengelige filtervalg når komponentet lastes
     useEffect(() => {
-        const extractFilters = (courses) => {
-            const filterValues = {};
-            
-            // Gå gjennom alle kolonner og samle unike verdier
-            availableColumns.forEach(column => {
-                if (column.field && column.field !== 'similarity') {
-                    const values = new Set();
-                    courses.forEach(course => {
-                        if (course[column.field]) {
-                            values.add(course[column.field]);
-                        }
-                    });
-                    filterValues[column.field] = Array.from(values).sort();
-                }
+        localStorage.setItem(COLUMN_SETTINGS_KEY, JSON.stringify(availableColumns));
+    }, [availableColumns]);
+
+    const handleGenerateExplanation = async (course, courseText) => {
+        setLoadingExplanations(prev => ({ ...prev, [course.kurskode]: true }));
+
+        try {
+            const explanation = await generateHFEmbedding(
+                {
+                    name: formData.courseName,
+                    content: courseText,
+                },
+                course,
+                course.similarity
+            );
+
+            if (!explanation) {
+                throw new Error('No explanation was generated');
+            }
+
+            // Update results in context
+            updateSearchState({
+                results: searchState.results.map(r =>
+                    r.kurskode === course.kurskode
+                        ? { ...r, explanation }
+                        : r
+                )
             });
-
-            setAvailableFilters(filterValues);
-        };
-
-        if (results && results.length > 0) {
-            extractFilters(results);
+        } catch (err) {
+            console.error('Error generating explanation:', err);
+            setError(`Failed to generate explanation for ${course.kurskode}: ${err.message}`);
+        } finally {
+            setLoadingExplanations(prev => ({ ...prev, [course.kurskode]: false }));
         }
-    }, [results, availableColumns]);
+    };
 
     const exportResults = () => {
         if (!results || results.length === 0) return;
 
         // Få alle aktive kolonner
         const activeColumns = availableColumns.filter(col => col.enabled);
-        
+
         // Lag CSV-innhold basert på aktive kolonner
         const csvContent = getFilteredResults().map(course => {
             const row = {};
@@ -663,27 +590,20 @@ const CourseComparison = () => {
     };
 
     const moveColumn = (index, direction) => {
-        setAvailableColumns(prevColumns => {
-            const newColumns = [...prevColumns];
-            const newIndex = direction === 'up' ? index - 1 : index + 1;
-            
-            if (newIndex >= 0 && newIndex < newColumns.length) {
-                [newColumns[index], newColumns[newIndex]] = [newColumns[newIndex], newColumns[index]];
-                localStorage.setItem(COLUMN_SETTINGS_KEY, JSON.stringify(newColumns));
-            }
-            
-            return newColumns;
-        });
+        const newColumns = [...availableColumns];
+        const newIndex = direction === 'up' ? index - 1 : index + 1;
+
+        if (newIndex >= 0 && newIndex < newColumns.length) {
+            [newColumns[index], newColumns[newIndex]] = [newColumns[newIndex], newColumns[index]];
+            updateSearchState({ availableColumns: newColumns });
+            localStorage.setItem(COLUMN_SETTINGS_KEY, JSON.stringify(newColumns));
+        }
     };
 
     const resetColumnSettings = () => {
-        setAvailableColumns(defaultColumns);
+        updateSearchState({ availableColumns: defaultColumns });
         localStorage.setItem(COLUMN_SETTINGS_KEY, JSON.stringify(defaultColumns));
     };
-
-    useEffect(() => {
-        localStorage.setItem(COLUMN_SETTINGS_KEY, JSON.stringify(availableColumns));
-    }, [availableColumns]);
 
     return (
         <Container maxWidth="lg" sx={{ py: 4 }}>
@@ -701,15 +621,6 @@ const CourseComparison = () => {
                 alignItems: 'center',
                 gap: 2
             }}>
-                <img 
-                    src={SWAAKONLogo} 
-                    alt="SWAAKON Logo"
-                    style={{ 
-                        height: '40px',
-                        width: 'auto',
-                        marginBottom: '16px'
-                    }} 
-                />
                 <AnimatedButton
                     variant="contained"
                     onClick={toggleForm}
@@ -723,7 +634,10 @@ const CourseComparison = () => {
             {/* Analysis Form */}
             <Collapse in={showForm}>
                 <StyledCard sx={{ mb: 4 }}>
-                    <form onSubmit={handleSubmit}>
+                    <form onSubmit={(e) => {
+                        e.preventDefault();
+                        handleCompare();
+                    }}>
                         <Grid container spacing={3}>
                             <Grid item xs={12}>
                                 <TextField
@@ -803,7 +717,7 @@ const CourseComparison = () => {
             {error && (
                 <ErrorDisplay error={error.message} onRetry={() => {
                     setError(null);
-                    setResults(null);
+                    updateSearchState({ results: null });
                     setLoading(true);
                 }} />
             )}
@@ -856,9 +770,9 @@ const CourseComparison = () => {
 
                     {/* Search and Filters */}
                     <Collapse in={showFilters}>
-                        <FilterBar 
+                        <FilterBar
                             filters={filters}
-                            setFilters={setFilters}
+                            setFilters={handleFilterChange}
                             availableFilters={availableFilters}
                             availableColumns={availableColumns}
                         />
@@ -935,8 +849,8 @@ const CourseComparison = () => {
                                                                     {loadingExplanations[course.kurskode] ? (
                                                                         <CircularProgress size={20} />
                                                                     ) : (
-                                                                        course.explanation ? 
-                                                                            (expandedExplanations[course.kurskode] ? 'Skjul' : 'Vis') 
+                                                                        course.explanation ?
+                                                                            (expandedExplanations[course.kurskode] ? 'Skjul' : 'Vis')
                                                                             : 'Analyser'
                                                                     )}
                                                                 </Button>
@@ -1031,13 +945,12 @@ const CourseComparison = () => {
                                         checked={column.enabled}
                                         onChange={() => {
                                             if (!column.required) {
-                                                setAvailableColumns(cols =>
-                                                    cols.map(col =>
-                                                        col.id === column.id
-                                                            ? { ...col, enabled: !col.enabled }
-                                                            : col
-                                                    )
+                                                const newColumns = availableColumns.map(col =>
+                                                    col.id === column.id
+                                                        ? { ...col, enabled: !col.enabled }
+                                                        : col
                                                 );
+                                                updateSearchState({ availableColumns: newColumns });
                                             }
                                         }}
                                         disabled={column.required}
@@ -1059,14 +972,14 @@ const CourseComparison = () => {
                                         )}
                                     </Typography>
                                     <Box sx={{ display: 'flex', gap: 0.5 }}>
-                                        <IconButton 
+                                        <IconButton
                                             size="small"
                                             onClick={() => moveColumn(index, 'up')}
                                             disabled={index === 0}
                                         >
                                             <ArrowUpwardIcon fontSize="small" />
                                         </IconButton>
-                                        <IconButton 
+                                        <IconButton
                                             size="small"
                                             onClick={() => moveColumn(index, 'down')}
                                             disabled={index === availableColumns.length - 1}
@@ -1080,7 +993,7 @@ const CourseComparison = () => {
                     </Box>
                 </DialogContent>
                 <DialogActions>
-                    <Button 
+                    <Button
                         onClick={resetColumnSettings}
                         color="secondary"
                     >

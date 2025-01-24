@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
-import { 
-    Box, 
-    TextField, 
-    Button, 
-    Typography, 
+import React, { useState, useEffect, useCallback } from 'react';
+import {
+    Box,
+    TextField,
+    Button,
+    Typography,
     Alert,
     Table,
     TableBody,
@@ -31,7 +31,6 @@ import {
 import { supabase } from '../services/supabase';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteIcon from '@mui/icons-material/Delete';
-import EditIcon from '@mui/icons-material/Edit';
 
 const AdminTools = () => {
     const [newUserEmail, setNewUserEmail] = useState('');
@@ -85,7 +84,7 @@ const AdminTools = () => {
             }));
 
             setUsers(usersWithRoles);
-            
+
             // Oppdater statistikk
             setStats({
                 totalUsers: users.length,
@@ -108,14 +107,14 @@ const AdminTools = () => {
         setError(null);
 
         try {
-            const { data, error } = await supabase.auth.admin.createUser({
+            const { error } = await supabase.auth.admin.createUser({
                 email: newUserEmail,
                 password: newUserPassword,
                 email_confirm: true
             });
 
             if (error) throw error;
-            
+
             setMessage('Bruker opprettet!');
             setNewUserEmail('');
             setNewUserPassword('');
@@ -129,9 +128,9 @@ const AdminTools = () => {
         try {
             const { error } = await supabase
                 .from('user_roles')
-                .upsert({ 
-                    user_id: userId, 
-                    is_admin: !currentStatus 
+                .upsert({
+                    user_id: userId,
+                    is_admin: !currentStatus
                 });
 
             if (error) throw error;
@@ -161,7 +160,7 @@ const AdminTools = () => {
         }
     };
 
-    const CostStatistics = () => {
+    const CostStatistics = React.memo(() => {
         const [costData, setCostData] = useState({
             totalCost: 0,
             lastDayCost: 0,
@@ -172,61 +171,46 @@ const AdminTools = () => {
             recentTransactions: []
         });
 
-        const fetchCostData = async () => {
+        const fetchCostData = useCallback(async () => {
             try {
                 console.log('Fetching cost data...');
-                
-                // Hent total kostnad
-                const { data: totalData, error: totalError } = await supabase
-                    .from('api_costs')
-                    .select('cost_usd');
+                const [totalResponse, dayResponse, recentResponse] = await Promise.all([
+                    supabase.from('api_costs').select('cost_usd'),
+                    supabase.from('api_costs')
+                        .select('cost_usd')
+                        .gte('timestamp', new Date(Date.now() - 86400000).toISOString()),
+                    supabase.from('api_costs')
+                        .select('*')
+                        .order('timestamp', { ascending: false })
+                        .limit(10)
+                ]);
 
-                if (totalError) throw totalError;
-                
-                const totalCost = totalData.reduce((sum, item) => sum + parseFloat(item.cost_usd), 0);
+                if (totalResponse.error) throw totalResponse.error;
+                if (dayResponse.error) throw dayResponse.error;
+                if (recentResponse.error) throw recentResponse.error;
 
-                // Hent siste døgns kostnad
-                const yesterday = new Date();
-                yesterday.setDate(yesterday.getDate() - 1);
-                
-                const { data: dayData, error: dayError } = await supabase
-                    .from('api_costs')
-                    .select('cost_usd')
-                    .gte('timestamp', yesterday.toISOString());
-
-                if (dayError) throw dayError;
-                
-                const dayCost = dayData.reduce((sum, item) => sum + parseFloat(item.cost_usd), 0);
-
-                // Hent siste transaksjoner
-                const { data: recentData, error: recentError } = await supabase
-                    .from('api_costs')
-                    .select('*')
-                    .order('timestamp', { ascending: false })
-                    .limit(10);
-
-                if (recentError) throw recentError;
-
-                console.log('Cost data fetched:', {
-                    totalCost,
-                    dayCost,
-                    recentTransactions: recentData
-                });
+                const totalCost = totalResponse.data.reduce((sum, item) => sum + parseFloat(item.cost_usd), 0);
+                const dayCost = dayResponse.data.reduce((sum, item) => sum + parseFloat(item.cost_usd), 0);
 
                 setCostData({
                     totalCost,
                     lastDayCost: dayCost,
-                    recentTransactions: recentData || []
+                    recentTransactions: recentResponse.data || []
                 });
             } catch (error) {
                 console.error('Error fetching cost data:', error);
             }
-        };
+        }, []);
 
         useEffect(() => {
             fetchCostData();
-            const interval = setInterval(fetchCostData, 30000); // Oppdater hvert 30. sekund
+            // Only update every 5 minutes instead of 30 seconds
+            const interval = setInterval(fetchCostData, 300000);
             return () => clearInterval(interval);
+        }, [fetchCostData]);
+
+        const formatCurrency = useCallback((value) => {
+            return `$${value.toFixed(2)}`;
         }, []);
 
         return (
@@ -242,7 +226,7 @@ const AdminTools = () => {
                                 Total kostnad
                             </Typography>
                             <Typography variant="h4">
-                                ${costData.totalCost.toFixed(2)}
+                                {formatCurrency(costData.totalCost)}
                             </Typography>
                         </CardContent>
                     </Card>
@@ -253,7 +237,7 @@ const AdminTools = () => {
                                 Siste 24 timer
                             </Typography>
                             <Typography variant="h4">
-                                ${costData.lastDayCost.toFixed(2)}
+                                {formatCurrency(costData.lastDayCost)}
                             </Typography>
                         </CardContent>
                     </Card>
@@ -284,7 +268,7 @@ const AdminTools = () => {
                                     <TableCell>{transaction.model}</TableCell>
                                     <TableCell>{transaction.tokens_used}</TableCell>
                                     <TableCell align="right">
-                                        ${transaction.cost_usd.toFixed(4)}
+                                        {formatCurrency(parseFloat(transaction.cost_usd))}
                                     </TableCell>
                                 </TableRow>
                             ))}
@@ -323,7 +307,7 @@ const AdminTools = () => {
                                     <TableCell>{email}</TableCell>
                                     <TableCell>{stats.queries}</TableCell>
                                     <TableCell align="right">
-                                        ${stats.cost.toFixed(4)}
+                                        {formatCurrency(stats.cost)}
                                     </TableCell>
                                 </TableRow>
                             ))}
@@ -332,7 +316,7 @@ const AdminTools = () => {
                 </TableContainer>
             </Box>
         );
-    };
+    });
 
     const fetchCustomFields = async () => {
         try {
@@ -359,9 +343,9 @@ const AdminTools = () => {
 
             // Legg til kolonnen i courses tabellen
             const { error: alterError } = await supabase
-                .rpc('add_column_to_courses', { 
+                .rpc('add_column_to_courses', {
                     column_name: fieldData.name,
-                    column_type: fieldData.type 
+                    column_type: fieldData.type
                 });
 
             if (alterError) throw alterError;
@@ -410,7 +394,7 @@ const AdminTools = () => {
                     <Typography variant="h6" gutterBottom>
                         Opprett ny bruker
                     </Typography>
-                    
+
                     <form onSubmit={handleCreateUser}>
                         <TextField
                             fullWidth
@@ -420,7 +404,7 @@ const AdminTools = () => {
                             margin="normal"
                             required
                         />
-                        
+
                         <TextField
                             fullWidth
                             label="Passord"
@@ -430,7 +414,7 @@ const AdminTools = () => {
                             required
                             type="password"
                         />
-                        
+
                         <Button
                             fullWidth
                             type="submit"
@@ -459,7 +443,7 @@ const AdminTools = () => {
                                 <TableRow key={user.id}>
                                     <TableCell>{user.email}</TableCell>
                                     <TableCell>
-                                        {user.last_sign_in_at 
+                                        {user.last_sign_in_at
                                             ? new Date(user.last_sign_in_at).toLocaleString('nb-NO')
                                             : 'Aldri'}
                                     </TableCell>
@@ -567,7 +551,7 @@ const AdminTools = () => {
                                         <TableCell>{field.type}</TableCell>
                                         <TableCell>{field.description}</TableCell>
                                         <TableCell>
-                                            <IconButton 
+                                            <IconButton
                                                 size="small"
                                                 onClick={() => handleDeleteField(field.id)}
                                             >
@@ -583,8 +567,8 @@ const AdminTools = () => {
             )}
 
             {/* Dialog for passordendring */}
-            <Dialog 
-                open={showPasswordDialog} 
+            <Dialog
+                open={showPasswordDialog}
                 onClose={() => setShowPasswordDialog(false)}
             >
                 <DialogTitle>
@@ -602,12 +586,12 @@ const AdminTools = () => {
                     />
                 </DialogContent>
                 <DialogActions>
-                    <Button 
+                    <Button
                         onClick={() => setShowPasswordDialog(false)}
                     >
                         Avbryt
                     </Button>
-                    <Button 
+                    <Button
                         onClick={handlePasswordChange}
                         variant="contained"
                         disabled={!newPassword}
@@ -618,8 +602,8 @@ const AdminTools = () => {
             </Dialog>
 
             {/* Dialog for å legge til nytt felt */}
-            <Dialog 
-                open={showFieldDialog} 
+            <Dialog
+                open={showFieldDialog}
                 onClose={() => setShowFieldDialog(false)}
             >
                 <DialogTitle>Legg til nytt kursfelt</DialogTitle>
@@ -659,7 +643,7 @@ const AdminTools = () => {
                     <Button onClick={() => setShowFieldDialog(false)}>
                         Avbryt
                     </Button>
-                    <Button 
+                    <Button
                         onClick={handleAddField}
                         variant="contained"
                         disabled={!fieldData.name || !fieldData.type}

@@ -4,18 +4,198 @@ const supabaseUrl = process.env.REACT_APP_SUPABASE_URL;
 const supabaseKey = process.env.REACT_APP_SUPABASE_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
-    throw new Error('Manglende Supabase miljøvariabler');
+    console.error('Missing Supabase environment variables:', {
+        hasUrl: !!supabaseUrl,
+        hasKey: !!supabaseKey
+    });
+    throw new Error('Missing Supabase environment variables');
 }
 
 console.log('Initializing Supabase client with URL:', supabaseUrl);
 
-export const supabase = createClient(supabaseUrl, supabaseKey, {
-    auth: {
-        persistSession: true,
-        autoRefreshToken: true,
-        detectSessionInUrl: true
+export const supabase = createClient(supabaseUrl, supabaseKey);
+
+// Constants for rate limiting and quotas
+const RATE_LIMIT_PER_MINUTE = 10;
+const DAILY_QUOTA = 100;
+const COST_THRESHOLD = 5.0; // USD
+
+// Track request timestamps for rate limiting
+const requestLog = new Map();
+
+export const checkRateLimit = async (userId) => {
+    const now = Date.now();
+    const userRequests = requestLog.get(userId) || [];
+
+    // Clean up old requests (older than 1 minute)
+    const recentRequests = userRequests.filter(time => now - time < 60000);
+
+    if (recentRequests.length >= RATE_LIMIT_PER_MINUTE) {
+        throw new Error('Rate limit exceeded. Please wait before making more requests.');
     }
-});
+
+    // Add current request
+    recentRequests.push(now);
+    requestLog.set(userId, recentRequests);
+
+    try {
+        // First, try to get the user stats
+        const { data: usageData, error: usageError } = await supabase
+            .from('user_stats')
+            .select('daily_requests, daily_cost')
+            .eq('user_id', userId)
+            .single();
+
+        // If no data exists, create a new entry
+        if (usageError && usageError.code === 'PGRST116') {
+            const { error: insertError } = await supabase
+                .from('user_stats')
+                .insert({
+                    user_id: userId,
+                    daily_requests: 1,
+                    daily_cost: 0,
+                    last_request: new Date().toISOString()
+                })
+                .select()
+                .single();
+
+            if (insertError) throw insertError;
+            return true;
+        }
+
+        if (usageError) throw usageError;
+
+        if (usageData.daily_requests >= DAILY_QUOTA) {
+            throw new Error('Daily quota exceeded. Please try again tomorrow.');
+        }
+
+        if (usageData.daily_cost >= COST_THRESHOLD) {
+            throw new Error('Daily cost threshold exceeded. Please contact administrator.');
+        }
+
+        // Update usage statistics
+        const { error: updateError } = await supabase
+            .from('user_stats')
+            .update({
+                daily_requests: (usageData.daily_requests || 0) + 1,
+                last_request: new Date().toISOString()
+            })
+            .eq('user_id', userId)
+            .select();
+
+        if (updateError) throw updateError;
+
+        return true;
+    } catch (error) {
+        console.error('Error in checkRateLimit:', error);
+        throw error;
+    }
+};
+
+export const trackApiCost = async (userId, cost, endpoint) => {
+    try {
+        // First, ensure user_stats exists
+        const { data: statsData, error: statsError } = await supabase
+            .from('user_stats')
+            .select('*')
+            .eq('user_id', userId)
+            .single();
+
+        if (statsError && statsError.code === 'PGRST116') {
+            // Create user_stats if it doesn't exist
+            const { error: createError } = await supabase
+                .from('user_stats')
+                .insert({
+                    user_id: userId,
+                    daily_requests: 0,
+                    daily_cost: cost,
+                    last_request: new Date().toISOString()
+                });
+
+            if (createError) throw createError;
+        } else if (statsError) {
+            throw statsError;
+        } else {
+            // Update daily cost if stats exist
+            const { error: updateError } = await supabase
+                .from('user_stats')
+                .update({
+                    daily_cost: statsData.daily_cost + cost
+                })
+                .eq('user_id', userId);
+
+            if (updateError) throw updateError;
+        }
+
+        // Estimate tokens based on endpoint and cost
+        let tokens_used = 0;
+        if (endpoint === 'course_comparison') {
+            tokens_used = Math.round(cost / 0.0001 * 1000); // Embedding model cost is $0.0001/1K tokens
+        } else {
+            tokens_used = Math.round(cost / 0.01 * 1000); // GPT-4 cost is roughly $0.01/1K tokens
+        }
+
+        // Log the API cost
+        const { error } = await supabase
+            .from('api_costs')
+            .insert({
+                user_id: userId,
+                cost_usd: cost,
+                endpoint: endpoint,
+                model: endpoint === 'course_comparison' ? 'text-embedding-3-large' : 'gpt-4-turbo',
+                tokens_used: tokens_used,
+                timestamp: new Date().toISOString()
+            });
+
+        if (error) throw error;
+
+        // Check if user has exceeded cost threshold
+        if (statsData && statsData.daily_cost + cost >= COST_THRESHOLD) {
+            await notifyAdmins(userId, statsData.daily_cost + cost);
+        }
+    } catch (error) {
+        console.error('Error tracking API cost:', error);
+        // Don't throw the error - just log it
+        // This prevents the main comparison flow from breaking if cost tracking fails
+    }
+};
+
+const notifyAdmins = async (userId, cost) => {
+    const { data: user } = await supabase.auth.admin.getUserById(userId);
+    const message = `User ${user.email} has exceeded the daily cost threshold (${cost.toFixed(2)} USD)`;
+
+    // Insert notification for admins
+    await supabase
+        .from('admin_notifications')
+        .insert({
+            message,
+            type: 'cost_alert',
+            created_at: new Date().toISOString()
+        });
+};
+
+// Reset daily stats at midnight
+const resetDailyStats = async () => {
+    const { error } = await supabase
+        .from('user_stats')
+        .update({
+            daily_requests: 0,
+            daily_cost: 0
+        });
+
+    if (error) console.error('Error resetting daily stats:', error);
+};
+
+// Set up daily reset
+const now = new Date();
+const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+const timeUntilMidnight = tomorrow - now;
+
+setTimeout(() => {
+    resetDailyStats();
+    // Set up recurring daily reset
+    setInterval(resetDailyStats, 24 * 60 * 60 * 1000);
+}, timeUntilMidnight);
 
 // Fetch all course data from original table
 export const fetchAllCourses = async () => {
@@ -56,11 +236,14 @@ export const createOpenAIEmbeddingsTable = async () => {
     }
 };
 
-// Store course with OpenAI embedding
-export const storeCourseWithEmbedding = async (courseData, embedding) => {
+// Store course with embedding
+export const storeCourseWithEmbedding = async (courseData, embedding, model = 'openai') => {
     try {
+        const tableName = model.includes('distiluse') ? 'huggingface_embeddings' : 'openai_embeddings';
+        console.log(`Storing course ${courseData.kurskode} with ${model} embedding in ${tableName}`);
+
         const { error } = await supabase
-            .from('openai_embeddings')
+            .from(tableName)
             .insert([{
                 kurskode: courseData.kurskode,
                 kursnavn: courseData.kursnavn,
@@ -75,14 +258,15 @@ export const storeCourseWithEmbedding = async (courseData, embedding) => {
                 learning_outcome_skills: courseData.learning_outcome_skills,
                 learning_outcome_general_competence: courseData.learning_outcome_general_competence,
                 course_content: courseData.course_content,
-                embedding: embedding
+                embedding: embedding,
+                embedding_model: model
             }]);
 
         if (error) {
             console.error('Error storing course with embedding:', error);
             throw error;
         }
-        console.log(`Successfully stored course ${courseData.kurskode} with OpenAI embedding`);
+        console.log(`Successfully stored course ${courseData.kurskode} with ${model} embedding`);
     } catch (error) {
         console.error(`Error storing course ${courseData.kurskode}:`, error);
         throw error;
@@ -119,50 +303,57 @@ export const fetchOpenAIEmbeddings = async () => {
 export const fetchStoredEmbeddings = async () => {
     try {
         console.log('Fetching stored embeddings from Supabase');
-        const { data, error } = await supabase
-            .from('openai_embeddings')
-            .select('*');
 
-        if (error) {
-            console.error('Supabase error:', {
-                message: error.message,
-                details: error.details,
-                hint: error.hint,
-                code: error.code
-            });
-            throw error;
+        // First, get the total count
+        const { count } = await supabase
+            .from('openai_embeddings')
+            .select('*', { count: 'exact', head: true });
+
+        console.log('Total courses in database:', count);
+
+        // Fetch all courses in chunks
+        const pageSize = 1000;
+        const pages = Math.ceil(count / pageSize);
+        let allData = [];
+
+        for (let i = 0; i < pages; i++) {
+            const { data, error } = await supabase
+                .from('openai_embeddings')
+                .select('*')
+                .range(i * pageSize, (i + 1) * pageSize - 1);
+
+            if (error) {
+                console.error('Supabase error:', {
+                    message: error.message,
+                    details: error.details,
+                    hint: error.hint,
+                    code: error.code
+                });
+                throw error;
+            }
+
+            allData = [...allData, ...data];
+            console.log(`Fetched page ${i + 1}/${pages}, got ${data.length} courses`);
         }
 
-        console.log('Raw data from Supabase:', {
-            totalCourses: data.length,
-            sampleCourse: data[0] ? {
-                kurskode: data[0].kurskode,
-                embeddingType: typeof data[0].embedding,
-                hasEmbedding: Boolean(data[0].embedding)
-            } : 'No courses found'
-        });
+        console.log('Total courses fetched:', allData.length);
 
         // Process the embeddings
-        const processedCourses = data.map(course => {
+        const processedCourses = allData.map(course => {
             // Handle the embedding field
             let processedEmbedding;
             if (course.embedding) {
                 if (Array.isArray(course.embedding)) {
                     processedEmbedding = course.embedding;
-                    console.log(`Course ${course.kurskode}: Embedding is already an array of length ${course.embedding.length}`);
                 } else if (typeof course.embedding === 'string') {
                     try {
                         processedEmbedding = JSON.parse(course.embedding);
-                        console.log(`Course ${course.kurskode}: Successfully parsed string embedding to array of length ${processedEmbedding.length}`);
                     } catch (e) {
                         console.error(`Error parsing embedding for course ${course.kurskode}:`, e);
                         return null;
                     }
                 } else {
-                    console.error(`Unknown embedding format for course ${course.kurskode}:`, {
-                        type: typeof course.embedding,
-                        value: course.embedding
-                    });
+                    console.error(`Unknown embedding format for course ${course.kurskode}`);
                     return null;
                 }
             } else {
@@ -172,11 +363,7 @@ export const fetchStoredEmbeddings = async () => {
 
             // Verify embedding is valid
             if (!Array.isArray(processedEmbedding) || processedEmbedding.length !== 2000) {
-                console.error(`Invalid embedding for course ${course.kurskode}:`, {
-                    isArray: Array.isArray(processedEmbedding),
-                    length: processedEmbedding ? processedEmbedding.length : 0,
-                    expectedLength: 2000
-                });
+                console.error(`Invalid embedding for course ${course.kurskode}`);
                 return null;
             }
 
@@ -186,23 +373,14 @@ export const fetchStoredEmbeddings = async () => {
             };
         }).filter(course => course !== null);
 
-        // Log summary of processed courses
-        console.log('Embedding processing summary:', {
-            totalCoursesBeforeProcessing: data.length,
-            validCoursesAfterProcessing: processedCourses.length,
-            firstValidEmbedding: processedCourses[0] ? {
-                kurskode: processedCourses[0].kurskode,
-                embeddingLength: processedCourses[0].embedding.length,
-                firstFewValues: processedCourses[0].embedding.slice(0, 5)
-            } : 'No valid embeddings'
+        console.log('Processing summary:', {
+            totalCoursesBeforeProcessing: allData.length,
+            validCoursesAfterProcessing: processedCourses.length
         });
 
         return processedCourses;
     } catch (error) {
-        console.error('Detailed error in fetchStoredEmbeddings:', {
-            message: error.message,
-            stack: error.stack
-        });
+        console.error('Error in fetchStoredEmbeddings:', error);
         throw error;
     }
 };
@@ -273,6 +451,151 @@ export const saveSearchHistory = async (userId, searchData) => {
             timestamp: new Date(),
             results_count: searchData.resultsCount
         }]);
-    
+
     if (error) console.error('Error saving search history:', error);
+};
+
+// Search History Functions
+export const saveSearch = async (searchData) => {
+    try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) throw new Error('User not authenticated');
+
+        // Prepare the data with reduced size
+        const processedResults = searchData.results.slice(0, 50).map(result => ({
+            kurskode: result.kurskode,
+            kursnavn: result.kursnavn,
+            similarity: result.similarity,
+            credits: result.credits,
+            level_of_study: result.level_of_study,
+            språk: result.språk,
+            semester: result.semester,
+            portfolio: result.portfolio,
+            område: result.område,
+            academic_coordinator: result.academic_coordinator,
+            institutt: result.institutt,
+            link_nb: result.link_nb
+        }));
+
+        const searchEntry = {
+            user_id: user.id,
+            search_input: {
+                courseName: searchData.search_input.courseName,
+                courseDescription: searchData.search_input.courseDescription.slice(0, 1000), // Limit description length
+                courseLiterature: searchData.search_input.courseLiterature?.slice(0, 500) || '' // Limit literature length
+            },
+            table_settings: {
+                activeColumns: searchData.table_settings.activeColumns,
+                filters: searchData.table_settings.filters
+            },
+            results: processedResults,
+            created_at: new Date().toISOString()
+        };
+
+        // Delete oldest search if limit reached
+        const { count } = await supabase
+            .from('search_history')
+            .select('id', { count: 'exact', head: true })
+            .eq('user_id', user.id);
+
+        if (count >= 5) {
+            const { data: oldestSearch } = await supabase
+                .from('search_history')
+                .select('id')
+                .eq('user_id', user.id)
+                .order('created_at', { ascending: true })
+                .limit(1)
+                .single();
+
+            if (oldestSearch) {
+                await supabase
+                    .from('search_history')
+                    .delete()
+                    .eq('id', oldestSearch.id);
+            }
+        }
+
+        // Insert new search with timeout handling
+        const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Request timed out')), 10000)
+        );
+
+        const insertPromise = supabase
+            .from('search_history')
+            .insert(searchEntry)
+            .select()
+            .single();
+
+        const { data, error } = await Promise.race([insertPromise, timeoutPromise]);
+
+        if (error) {
+            console.error('Error saving search:', error);
+            return null; // Return null instead of throwing
+        }
+
+        return data;
+    } catch (error) {
+        console.error('Error in saveSearch:', error);
+        return null; // Return null instead of throwing
+    }
+};
+
+export const getSearchHistory = async () => {
+    try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) throw new Error('User not authenticated');
+
+        const { data, error } = await supabase
+            .from('search_history')
+            .select('*')
+            .eq('user_id', user.id)
+            .order('created_at', { ascending: false })
+            .limit(5);
+
+        if (error) throw error;
+        return data || [];
+
+    } catch (error) {
+        console.error('Error fetching search history:', error);
+        throw error;
+    }
+};
+
+export const getSearchById = async (searchId) => {
+    try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) throw new Error('User not authenticated');
+
+        const { data, error } = await supabase
+            .from('search_history')
+            .select('*')
+            .eq('id', searchId)
+            .eq('user_id', user.id)  // Ensure user can only access their own searches
+            .single();
+
+        if (error) throw error;
+        return data;
+    } catch (error) {
+        console.error('Error fetching search:', error);
+        throw error;
+    }
+};
+
+export const deleteSearch = async (searchId) => {
+    try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) throw new Error('User not authenticated');
+
+        const { error } = await supabase
+            .from('search_history')
+            .delete()
+            .eq('id', searchId)
+            .eq('user_id', user.id);  // Ensure user can only delete their own searches
+
+        if (error) throw error;
+        return true;
+    } catch (error) {
+        console.error('Error deleting search:', error);
+        throw error;
+    }
 }; 

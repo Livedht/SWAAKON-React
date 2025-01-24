@@ -1,53 +1,102 @@
-import { fetchAllCourses, storeCourseWithEmbedding } from '../services/supabase';
-import { generateEmbedding } from '../services/openai';
+import { createClient } from '@supabase/supabase-js';
+import { prepareCourseText, generateHFEmbedding } from '../services/similarity.js';
+import dotenv from 'dotenv';
 
-const generateCourseText = (course) => `
-    Course Name: ${course.kursnavn}
-    Knowledge Outcomes: ${course.learning_outcome_knowledge || ''}
-    Skills Outcomes: ${course.learning_outcome_skills || ''}
-    General Competence: ${course.learning_outcome_general_competence || ''}
-    Course Content: ${course.course_content || ''}
-`.trim();
+dotenv.config();
 
-const migrateEmbeddings = async () => {
+const supabaseUrl = process.env.REACT_APP_SUPABASE_URL;
+const supabaseKey = process.env.REACT_APP_SUPABASE_KEY;
+
+if (!supabaseUrl || !supabaseKey) {
+    console.error('Missing Supabase configuration');
+    process.exit(1);
+}
+
+const supabase = createClient(supabaseUrl, supabaseKey);
+
+async function delay(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function migrateEmbeddings() {
+    console.log('Starting migration to HuggingFace embeddings...');
+
     try {
-        console.log('Starting embedding migration...');
+        let allCourses = [];
+        let page = 0;
+        const pageSize = 1000;
 
-        // 1. Fetch all courses
-        const courses = await fetchAllCourses();
-        console.log(`Found ${courses.length} courses to process`);
+        // Fetch all courses using pagination
+        while (true) {
+            const { data: courses, error } = await supabase
+                .from('courses')
+                .select('*')
+                .range(page * pageSize, (page + 1) * pageSize - 1);
 
-        // 2. Process each course
-        for (let i = 0; i < courses.length; i++) {
-            const course = courses[i];
-            console.log(`Processing course ${i + 1}/${courses.length}: ${course.kurskode}`);
+            if (error) throw error;
 
+            if (!courses || courses.length === 0) break;
+
+            allCourses = allCourses.concat(courses);
+            page++;
+        }
+
+        console.log(`Found ${allCourses.length} courses to process`);
+
+        let successCount = 0;
+        let errorCount = 0;
+
+        for (const course of allCourses) {
             try {
-                // Generate course text for embedding
-                const courseText = generateCourseText(course);
+                console.log(`\nProcessing ${course.kurskode} (${successCount + errorCount + 1}/${allCourses.length})`);
 
-                // Generate OpenAI embedding
-                const embedding = await generateEmbedding(courseText);
+                // Prepare course text
+                const courseText = prepareCourseText(course);
+                console.log('Text prepared, length:', courseText.length);
 
-                // Store course with new embedding
-                await storeCourseWithEmbedding(course, embedding);
+                // Generate new embedding
+                const embedding = await generateHFEmbedding(courseText);
 
-                console.log(`Successfully processed ${course.kurskode}`);
+                if (!embedding || !Array.isArray(embedding)) {
+                    throw new Error('Invalid embedding format received');
+                }
 
-                // Add a small delay to avoid rate limits
-                await new Promise(resolve => setTimeout(resolve, 200));
+                console.log('Embedding generated, dimensions:', embedding.length);
+
+                // Update course with new embedding
+                const { error: updateError } = await supabase
+                    .from('courses')
+                    .update({
+                        hf_embedding: embedding,
+                        last_updated: new Date().toISOString()
+                    })
+                    .eq('kurskode', course.kurskode);
+
+                if (updateError) throw updateError;
+
+                console.log(`Successfully updated ${course.kurskode}`);
+                successCount++;
+
+                // Add a delay to avoid rate limiting
+                await delay(1000);
+
             } catch (error) {
-                console.error(`Error processing course ${course.kurskode}:`, error);
-                // Continue with next course even if one fails
-                continue;
+                console.error(`Error processing ${course.kurskode}:`, error);
+                errorCount++;
+
+                // Add a longer delay after errors
+                await delay(5000);
             }
         }
 
-        console.log('Migration completed successfully!');
+        console.log('\nMigration completed!');
+        console.log(`Successfully processed: ${successCount}`);
+        console.log(`Errors encountered: ${errorCount}`);
+
     } catch (error) {
         console.error('Migration failed:', error);
+        process.exit(1);
     }
-};
+}
 
-// Run the migration
 migrateEmbeddings(); 
